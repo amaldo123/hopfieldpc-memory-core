@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import itertools
+import math
 import pytest
 import torch
 
@@ -243,3 +244,46 @@ def test_config_memory_method_and_yaml_equality() -> None:
     del y2["reports_dir"]
     y2.pop("memory_method", None)
     assert y1 == y2
+
+
+def test_mean_quantization_error_toy() -> None:
+    # Proves that mean quantization error correctly averages distance to nearest center.
+    from benchmarks.kcenter_analysis import mean_quantization_error
+    x = torch.tensor([[0.0], [2.0], [10.0]])
+    centers = torch.tensor([[0.0], [10.0]])
+    mqe = mean_quantization_error(x, centers)
+    assert math.isclose(mqe, 2.0 / 3.0, rel_tol=1e-5)
+
+
+def test_coverage_fraction_toy() -> None:
+    # Proves that coverage fraction correctly computes fraction within radius r.
+    from benchmarks.kcenter_analysis import coverage_fraction
+    x = torch.tensor([[0.0], [2.0], [10.0]])
+    centers = torch.tensor([[0.0], [10.0]])
+    assert math.isclose(coverage_fraction(x, centers, 1.0), 2.0 / 3.0, rel_tol=1e-5)
+    assert math.isclose(coverage_fraction(x, centers, 2.0), 1.0, rel_tol=1e-5)
+    assert math.isclose(coverage_fraction(x, centers, 0.0), 2.0 / 3.0, rel_tol=1e-5)
+
+
+def test_cell_balance_entropy_toy() -> None:
+    # Proves that cell balance entropy correctly computes Shannon entropy of Voronoi partitions.
+    import math
+    from benchmarks.kcenter_analysis import cell_balance_entropy
+    x = torch.tensor([[0.0], [0.1], [10.0], [10.1]])
+    centers = torch.tensor([[0.0], [10.0]])
+    entropy = cell_balance_entropy(x, centers)
+    assert math.isclose(entropy, math.log(2.0), rel_tol=1e-4)
+
+
+def test_pairwise_distances_and_margin() -> None:
+    # Proves that pairwise distance and inter-class margin compute correct statistics.
+    from benchmarks.kcenter_analysis import inter_class_margin, pairwise_distances
+    centers = torch.tensor([[0.0], [5.0], [15.0]])
+    mean_d, min_d = pairwise_distances(centers)
+    assert math.isclose(mean_d, 10.0, rel_tol=1e-5)
+    assert math.isclose(min_d, 5.0, rel_tol=1e-5)
+
+    mem = torch.tensor([[0.0], [1.0], [10.0], [11.0]])
+    labels = torch.tensor([0, 0, 1, 1])
+    margin = inter_class_margin(mem, labels)
+    assert math.isclose(margin, 9.5, rel_tol=1e-5)

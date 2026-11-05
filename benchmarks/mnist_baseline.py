@@ -61,6 +61,7 @@ NOISE_GRID_KEYS = {
     "occlusion": "occlusion_sizes",
 }
 PLACEMENTS = ("pixel", "embedding")
+MEMORY_METHODS = ("kmeans", "kcenter")
 DEVICES = ("auto", "cpu", "cuda")
 
 COST_KEYS = ("batch_size", "batch_sizes", "warmup", "iters", "repeats", "num_threads")
@@ -86,6 +87,7 @@ CONFIG_KEYS = (
     "placements",
     "center_prototypes",
     "prototypes_per_class",
+    "memory_method",
     "beta_selection_sets",
     "baseline_tuning",
     "cost",
@@ -346,6 +348,11 @@ def validate_mnist_config(config: dict[str, Any]) -> dict[str, Any]:
         )
 
     lr = _require_float("lr", config.get("lr", 1e-3), minimum=0.0, strict=True)
+    memory_method = config.get("memory_method", "kmeans")
+    if memory_method not in MEMORY_METHODS:
+        raise ValueError(
+            f"memory_method must be one of {MEMORY_METHODS}, got {memory_method!r}."
+        )
     center_prototypes = config.get("center_prototypes", True)
     if not isinstance(center_prototypes, bool):
         raise TypeError(
@@ -366,6 +373,7 @@ def validate_mnist_config(config: dict[str, Any]) -> dict[str, Any]:
         "epochs": _require_int("epochs", config.get("epochs", 3), minimum=1),
         "batch_size": _require_int("batch_size", config.get("batch_size", 128), minimum=1),
         "lr": lr,
+        "memory_method": memory_method,
         "eval_batch_size": _require_int(
             "eval_batch_size", config.get("eval_batch_size", 1000), minimum=1
         ),

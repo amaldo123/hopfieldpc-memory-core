@@ -283,6 +283,52 @@ def kmeans(
     return centroids
 
 
+def k_center_greedy(
+    x: torch.Tensor,
+    k: int,
+    *,
+    generator: torch.Generator,
+    first: int | None = None,
+) -> torch.Tensor:
+    """k-center greedy farthest-point traversal (Sener & Savarese 2018, arXiv:1708.00489).
+
+    Selects k points minimizing covering radius; 2-approximation in O(N*k*D) time and O(N) memory.
+    """
+    if x.ndim != 2:
+        raise ValueError(f"x must be 2-D [N, D], got {x.ndim}-D tensor with shape {tuple(x.shape)}.")
+    n, _ = x.shape
+    if isinstance(k, bool) or not isinstance(k, int) or k < 1 or k > n:
+        raise ValueError(f"k must be an integer in [1, {n}], got {k!r}.")
+    if first is not None and (isinstance(first, bool) or not isinstance(first, int) or first < 0 or first >= n):
+        raise ValueError(f"first must be an integer in [0, {n - 1}], got {first!r}.")
+
+    picked = torch.zeros(n, dtype=torch.bool, device=x.device)
+    order: list[int] = []
+
+    u = first if first is not None else int(torch.randint(0, n, (1,), generator=generator).item())
+    order.append(u)
+    picked[u] = True
+
+    # running distance to the closest center picked so far
+    nearest = (x - x[u]).norm(dim=1)
+
+    for _ in range(1, k):
+        cand = nearest.clone()
+        cand[picked] = -1.0
+        u = int(torch.argmax(cand).item())
+        order.append(u)
+        picked[u] = True
+        # update running minimum distance to any picked center
+        nearest = torch.minimum(nearest, (x - x[u]).norm(dim=1))
+
+    return torch.tensor(order, dtype=torch.long, device=x.device)
+
+
+def covering_radius(x: torch.Tensor, centers: torch.Tensor) -> float:
+    """max over rows of x of the distance to the nearest row of centers."""
+    return float(torch.cdist(x.float(), centers.float()).min(dim=1).values.max().item())
+
+
 def build_memory(
     z_train: torch.Tensor,
     labels: torch.Tensor,

@@ -121,3 +121,125 @@ def test_k_center_greedy_input_not_modified() -> None:
     clone = x.clone()
     _ = k_center_greedy(x, 5, generator=torch.Generator().manual_seed(42))
     assert torch.equal(x, clone)
+
+
+def test_build_memory_kcenter_shape_labels_center() -> None:
+    # Proves that build_memory(method="kcenter") produces expected shape, sorted labels, and center.
+    from benchmarks.mnist_prototype_retrieval import build_memory
+    z_train = torch.randn(100, 8)
+    labels = torch.repeat_interleave(torch.arange(10), 10)
+    mem, mem_labels, center = build_memory(z_train, labels, per_class=3, center=True, seed=0, method="kcenter")
+    assert mem.shape == (30, 8)
+    assert mem_labels.tolist() == sorted(list(range(10)) * 3)
+    assert center is not None
+    assert torch.allclose(center, z_train.mean(dim=0))
+
+
+def test_build_memory_kcenter_real_rows_matching_class() -> None:
+    # Proves that every row in kcenter memory equals some z_train row of the same class.
+    from benchmarks.mnist_prototype_retrieval import build_memory
+    z_train = torch.randn(100, 8)
+    labels = torch.repeat_interleave(torch.arange(10), 10)
+    mem, mem_labels, _ = build_memory(z_train, labels, per_class=3, center=True, seed=0, method="kcenter")
+    for i in range(len(mem)):
+        c = mem_labels[i].item()
+        zc = z_train[labels == c]
+        assert any(torch.equal(mem[i], row) for row in zc)
+
+
+def test_build_memory_kcenter_deterministic() -> None:
+    # Proves that same seed produces identical kcenter memory.
+    from benchmarks.mnist_prototype_retrieval import build_memory
+    z_train = torch.randn(100, 8)
+    labels = torch.repeat_interleave(torch.arange(10), 10)
+    m1, l1, c1 = build_memory(z_train, labels, per_class=3, center=True, seed=42, method="kcenter")
+    m2, l2, c2 = build_memory(z_train, labels, per_class=3, center=True, seed=42, method="kcenter")
+    assert torch.equal(m1, m2)
+    assert torch.equal(l1, l2)
+    assert center_equal(c1, c2)
+
+
+def center_equal(c1: torch.Tensor | None, c2: torch.Tensor | None) -> bool:
+    if c1 is None or c2 is None:
+        return c1 is c2
+    return bool(torch.equal(c1, c2))
+
+
+def test_kcenter_vs_kmeans_covering_radius_outliers() -> None:
+    # Proves that on dense blob + far points, per-class covering radius of kcenter <= kmeans.
+    from benchmarks.mnist_prototype_retrieval import build_memory
+    torch.manual_seed(0)
+    blocks = []
+    labels_list = []
+    for c in range(10):
+        # Two dense sub-clusters with 250 points each at -5 and +5, plus two outliers at -50 and +50
+        c1 = torch.randn(250, 2) * 0.1 + torch.tensor([-5.0, 0.0]) + c * 200.0
+        c2 = torch.randn(250, 2) * 0.1 + torch.tensor([5.0, 0.0]) + c * 200.0
+        o1 = torch.tensor([[-50.0, 0.0]]) + c * 200.0
+        o2 = torch.tensor([[50.0, 0.0]]) + c * 200.0
+        zc = torch.cat([c1, c2, o1, o2])
+        blocks.append(zc)
+        labels_list.append(torch.full((len(zc),), c, dtype=torch.long))
+    z_train = torch.cat(blocks)
+    labels = torch.cat(labels_list)
+
+    mem_km, l_km, _ = build_memory(z_train, labels, per_class=3, center=False, seed=0, method="kmeans")
+    mem_kc, l_kc, _ = build_memory(z_train, labels, per_class=3, center=False, seed=0, method="kcenter")
+
+    for c in range(10):
+        zc = z_train[labels == c]
+        r_km = covering_radius(zc, mem_km[l_km == c])
+        r_kc = covering_radius(zc, mem_kc[l_kc == c])
+        assert r_kc <= r_km + 1e-4
+
+
+def test_build_memory_per_class_1_and_unknown_method() -> None:
+    # Proves that per_class == 1 yields class mean for both methods, and unknown method raises.
+    from benchmarks.mnist_prototype_retrieval import build_memory
+    z_train = torch.randn(50, 6)
+    labels = torch.repeat_interleave(torch.arange(5), 10)
+    m_km, _, _ = build_memory(z_train, labels, per_class=1, center=False, seed=0, method="kmeans", num_classes=5)
+    m_kc, _, _ = build_memory(z_train, labels, per_class=1, center=False, seed=0, method="kcenter", num_classes=5)
+    for c in range(5):
+        mean_c = z_train[labels == c].mean(dim=0, keepdim=True)
+        assert torch.allclose(m_km[c:c+1], mean_c)
+        assert torch.allclose(m_kc[c:c+1], mean_c)
+    with pytest.raises(ValueError, match="Unknown memory method"):
+        build_memory(z_train, labels, per_class=2, center=False, seed=0, method="invalid")
+
+
+def test_build_memory_default_method_is_kmeans() -> None:
+    # Proves that default method in build_memory is bit-identical to method="kmeans".
+    from benchmarks.mnist_prototype_retrieval import build_memory
+    z_train = torch.randn(80, 8)
+    labels = torch.repeat_interleave(torch.arange(10), 8)
+    m_def, l_def, c_def = build_memory(z_train, labels, per_class=3, center=True, seed=123)
+    m_km, l_km, c_km = build_memory(z_train, labels, per_class=3, center=True, seed=123, method="kmeans")
+    assert torch.equal(m_def, m_km)
+    assert torch.equal(l_def, l_km)
+    assert center_equal(c_def, c_km)
+
+
+def test_config_memory_method_and_yaml_equality() -> None:
+    # Proves that config validates memory_method and the two YAML files match modulo reports_dir and memory_method.
+    import yaml
+    from benchmarks.mnist_baseline import validate_mnist_config
+
+    cfg_def = validate_mnist_config({})
+    assert cfg_def["memory_method"] == "kmeans"
+
+    cfg_kc = validate_mnist_config({"memory_method": "kcenter"})
+    assert cfg_kc["memory_method"] == "kcenter"
+
+    with pytest.raises(ValueError, match="memory_method must be one of"):
+        validate_mnist_config({"memory_method": "bogus"})
+
+    with open("configs/mnist_prototype_retrieval.yaml", "r", encoding="utf-8") as f:
+        y1 = yaml.safe_load(f)
+    with open("configs/mnist_kcenter.yaml", "r", encoding="utf-8") as f:
+        y2 = yaml.safe_load(f)
+
+    del y1["reports_dir"]
+    del y2["reports_dir"]
+    y2.pop("memory_method", None)
+    assert y1 == y2

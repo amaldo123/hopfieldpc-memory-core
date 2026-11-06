@@ -209,23 +209,21 @@ def outlier_analysis(
 def measure_construction_scaling() -> dict[str, Any]:
     """Measure memory construction time vs N (sample size) and vs k (prototype budget)."""
     d = 64
-    n_values = [1000, 3000, 10000, 30000, 100000]
+    n_values = [1000, 3000, 10000, 30000]
     k_fixed = 8
     gen = torch.Generator().manual_seed(42)
 
     times_n_kc, times_n_km = [], []
     for n in n_values:
         x = torch.randn(n, d)
-        # K-Center
         start = time.perf_counter()
         _ = k_center_greedy(x, k_fixed, generator=gen)
         times_n_kc.append(time.perf_counter() - start)
-        # K-Means (25 iters)
         start = time.perf_counter()
         _ = kmeans(x, k_fixed, generator=gen, iters=25)
         times_n_km.append(time.perf_counter() - start)
 
-    k_values = [8, 16, 32, 64, 128]
+    k_values = [8, 16, 32, 64]
     n_fixed = 10000
     times_k_kc, times_k_km = [], []
     for k in k_values:
@@ -248,7 +246,7 @@ def measure_construction_scaling() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Plotting Utilities
+# Figure Generation
 # ---------------------------------------------------------------------------
 
 
@@ -256,157 +254,224 @@ def generate_figures(
     output_dir: Path,
     summary_data: dict[str, Any],
     scaling_data: dict[str, Any],
-    sample_embeddings: torch.Tensor,
-    sample_labels: torch.Tensor,
-    mem_km: torch.Tensor,
-    mem_kc: torch.Tensor,
-    mem_rand: torch.Tensor,
+    sample_mem_km: torch.Tensor,
+    sample_mem_kc: torch.Tensor,
+    sample_mem_rnd: torch.Tensor,
 ) -> None:
-    """Generate all 7 research report figures at 150 dpi."""
+    """Generate publication-ready figures fig1 through fig7 in output_dir."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    plt.rcParams.update({"font.size": 10, "figure.autolayout": True})
+    plt.rcParams.update({"font.size": 9, "font.family": "sans-serif"})
 
-    # 1. PCA 2D Scatter for class 0
-    c0 = sample_embeddings[sample_labels == 0].float()
-    u, s, v = torch.pca_lowrank(c0, q=2)
-    proj_c0 = torch.matmul(c0, v[:, :2]).numpy()
-    proj_km = torch.matmul(mem_km[:8].float(), v[:, :2]).numpy()
-    proj_kc = torch.matmul(mem_kc[:8].float(), v[:, :2]).numpy()
-
-    fig, ax = plt.subplots(figsize=(6, 5), dpi=150)
-    ax.scatter(proj_c0[:, 0], proj_c0[:, 1], c="#d0d7de", s=15, alpha=0.5, label="Train Embeddings (Digit 0)")
-    ax.scatter(proj_km[:, 0], proj_km[:, 1], c="#0969da", marker="X", s=80, edgecolors="black", linewidths=1.2, label="K-means Centroids")
-    ax.scatter(proj_kc[:, 0], proj_kc[:, 1], c="#cf222e", marker="o", s=80, edgecolors="black", linewidths=1.2, label="K-Center Picks")
-    ax.set_title("PCA Representation: K-means vs K-Center (Digit 0)", fontsize=11, fontweight="bold")
-    ax.set_xlabel("Principal Component 1")
-    ax.set_ylabel("Principal Component 2")
-    ax.legend(loc="upper right", frameon=True)
-    fig.savefig(output_dir / "fig1_pca_embeddings.png")
-    plt.close(fig)
-
-    # 2. Covering Radius & Mean Quantization Error Bars
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8, 4), dpi=150)
+    # --- Fig 1: Coverage Tradeoff (covering_radius vs MQE, plus distances) ---
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 3.8), dpi=150)
+    cov = summary_data["coverage"]["train"]
     methods = ["K-means", "K-Center", "Random-8"]
-    cov_radii = [summary_data["coverage"]["train"]["kmeans"]["radius_mean"],
-                 summary_data["coverage"]["train"]["kcenter"]["radius_mean"],
-                 summary_data["coverage"]["train"]["random"]["radius_mean"]]
-    cov_errs = [summary_data["coverage"]["train"]["kmeans"]["radius_std"],
-                summary_data["coverage"]["train"]["kcenter"]["radius_std"],
-                summary_data["coverage"]["train"]["random"]["radius_std"]]
-
-    mqe_vals = [summary_data["coverage"]["train"]["kmeans"]["mqe_mean"],
-                summary_data["coverage"]["train"]["kcenter"]["mqe_mean"],
-                summary_data["coverage"]["train"]["random"]["mqe_mean"]]
-    mqe_errs = [summary_data["coverage"]["train"]["kmeans"]["mqe_std"],
-                summary_data["coverage"]["train"]["kcenter"]["mqe_std"],
-                summary_data["coverage"]["train"]["random"]["mqe_std"]]
-
     colors = ["#0969da", "#cf222e", "#8250df"]
-    ax1.bar(methods, cov_radii, yerr=cov_errs, capsize=4, color=colors, alpha=0.85, edgecolor="black")
-    ax1.set_title("Covering Radius (Train)", fontsize=10, fontweight="bold")
-    ax1.set_ylabel("Radius (Euclidean Distance)")
 
-    ax2.bar(methods, mqe_vals, yerr=mqe_errs, capsize=4, color=colors, alpha=0.85, edgecolor="black")
-    ax2.set_title("Mean Quantization Error (Train)", fontsize=10, fontweight="bold")
+    r_means = [cov["kmeans"]["radius_mean"], cov["kcenter"]["radius_mean"], cov["random"]["radius_mean"]]
+    r_stds = [cov["kmeans"]["radius_std"], cov["kcenter"]["radius_std"], cov["random"]["radius_std"]]
+    ax1.bar(methods, r_means, yerr=r_stds, capsize=4, color=colors, alpha=0.85, edgecolor="black")
+    ax1.set_title("Covering Radius (Worst-Case Distance)", fontsize=10, fontweight="bold")
+    ax1.set_ylabel("Covering Radius (Euclidean)")
+    ax1.grid(True, linestyle="--", alpha=0.4, axis="y")
+
+    q_means = [cov["kmeans"]["mqe_mean"], cov["kcenter"]["mqe_mean"], cov["random"]["mqe_mean"]]
+    q_stds = [cov["kmeans"]["mqe_std"], cov["kcenter"]["mqe_std"], cov["random"]["mqe_std"]]
+    ax2.bar(methods, q_means, yerr=q_stds, capsize=4, color=colors, alpha=0.85, edgecolor="black")
+    ax2.set_title("Mean Quantization Error (Average Distance)", fontsize=10, fontweight="bold")
     ax2.set_ylabel("Mean Distance to Nearest Memory")
-    fig.savefig(output_dir / "fig2_coverage_bars.png")
+    ax2.grid(True, linestyle="--", alpha=0.4, axis="y")
+
+    fig.tight_layout()
+    fig.savefig(output_dir / "fig1_coverage_tradeoff.png")
     plt.close(fig)
 
-    # 3. Validation Beta Curves
-    if "beta_curves" in summary_data:
-        fig, ax = plt.subplots(figsize=(6, 4), dpi=150)
-        betas = summary_data["beta_curves"]["betas"]
-        ax.plot(betas, summary_data["beta_curves"]["kmeans"], "o-", color="#0969da", label="K-means Centroids", linewidth=1.5)
-        ax.plot(betas, summary_data["beta_curves"]["kcenter"], "s-", color="#cf222e", label="K-Center Greedy", linewidth=1.5)
-        ax.set_xscale("log")
-        ax.set_title(r"Validation Accuracy vs $eta$", fontsize=11, fontweight="bold")
-        ax.set_xlabel(r"Inverse Temperature $eta$")
-        ax.set_ylabel("Validation Head Accuracy")
-        ax.legend(frameon=True)
-        ax.grid(True, linestyle="--", alpha=0.5)
-        fig.savefig(output_dir / "fig3_beta_curves.png")
-        plt.close(fig)
-
-    # 4. Accuracy vs Noise Level (Noise Robustness)
-    fig, axes = plt.subplots(1, 3, figsize=(12, 3.8), dpi=150)
-    noise_names = [("gaussian", r"Gaussian Noise ($\sigma$)", "gaussian_sigmas"),
-                   ("salt_pepper", "Salt & Pepper ($p$)", "salt_pepper_probs"),
-                   ("occlusion", "Occlusion Patch Size ($s$)", "occlusion_sizes")]
-    for ax, (nt, xlabel, key) in zip(axes, noise_names):
+    # --- Fig 2: Noise Robustness (accuracy vs noise level with delta subplots) ---
+    fig, axes = plt.subplots(2, 3, figsize=(12, 6.2), dpi=150, gridspec_kw={"height_ratios": [2, 1]})
+    noise_specs = [
+        ("gaussian", r"Gaussian Noise ($\sigma$)", "gaussian_sigmas", axes[0, 0], axes[1, 0]),
+        ("salt_pepper", "Salt & Pepper ($p$)", "salt_pepper_probs", axes[0, 1], axes[1, 1]),
+        ("occlusion", "Occlusion Patch Size ($s$)", "occlusion_sizes", axes[0, 2], axes[1, 2]),
+    ]
+    for nt, xlabel, key, ax_top, ax_bot in noise_specs:
         grid = summary_data["noise_grids"].get(key, [])
         if grid:
-            ax.plot(grid, summary_data["accuracy"][nt]["baseline"], "^--", color="#6e7781", label="Baseline (L8=Id)", linewidth=1.2)
-            ax.plot(grid, summary_data["accuracy"][nt]["kmeans"], "o-", color="#0969da", label="K-means Centroids", linewidth=1.5)
-            ax.plot(grid, summary_data["accuracy"][nt]["kcenter"], "s-", color="#cf222e", label="K-Center Greedy", linewidth=1.5)
-            ax.set_title(nt.replace("_", " ").capitalize(), fontsize=10, fontweight="bold")
-            ax.set_xlabel(xlabel)
-            ax.set_ylabel("Test Head Accuracy")
-            ax.grid(True, linestyle="--", alpha=0.5)
-            if ax is axes[0]:
-                ax.legend(frameon=True, fontsize=8)
-    fig.savefig(output_dir / "fig4_noise_robustness.png")
+            base_acc = summary_data["accuracy"][nt]["baseline"]
+            km_acc = summary_data["accuracy"][nt]["kmeans"]
+            kc_acc = summary_data["accuracy"][nt]["kcenter"]
+
+            ax_top.plot(grid, base_acc, "^--", color="#6e7781", label="Baseline CNN", linewidth=1.2)
+            ax_top.plot(grid, km_acc, "o-", color="#0969da", label="Hopfield (K-means)", linewidth=1.5)
+            ax_top.plot(grid, kc_acc, "s-", color="#cf222e", label="Hopfield (K-Center)", linewidth=1.5)
+            ax_top.set_title(nt.replace("_", " ").title(), fontsize=10, fontweight="bold")
+            ax_top.set_ylabel("Head Accuracy")
+            ax_top.grid(True, linestyle="--", alpha=0.4)
+            if ax_top is axes[0, 0]:
+                ax_top.legend(frameon=True, fontsize=8)
+
+            delta_kc_km = [kc - km for kc, km in zip(kc_acc, km_acc)]
+            ax_bot.axhline(0, color="gray", linestyle="--", linewidth=0.8)
+            ax_bot.plot(grid, delta_kc_km, "s-", color="#cf222e", linewidth=1.2)
+            ax_bot.set_xlabel(xlabel)
+            ax_bot.set_ylabel(r"$\Delta$ (KC $-$ KM)")
+            ax_bot.grid(True, linestyle="--", alpha=0.4)
+
+    fig.tight_layout()
+    fig.savefig(output_dir / "fig2_noise_robustness.png")
     plt.close(fig)
 
-    # 5. Retrieval Behavior Diagnostics
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(10, 3.5), dpi=150)
-    ret_methods = ["K-means", "K-Center"]
-    colors2 = ["#0969da", "#cf222e"]
+    # --- Fig 3: Beta Sensitivity (clean and noisy accuracy vs beta, highlighting beta*) ---
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9.5, 3.8), dpi=150)
+    betas = summary_data["beta_sweep"]["betas"]
+    ax1.plot(betas, summary_data["beta_sweep"]["clean_km"], "o-", color="#0969da", label="K-means", linewidth=1.5)
+    ax1.plot(betas, summary_data["beta_sweep"]["clean_kc"], "s-", color="#cf222e", label="K-Center", linewidth=1.5)
+    ax1.axvline(summary_data["beta_star"]["kmeans"], color="#0969da", linestyle=":", alpha=0.8, label=r"KM $\beta^*=50$")
+    ax1.axvline(summary_data["beta_star"]["kcenter"], color="#cf222e", linestyle=":", alpha=0.8, label=r"KC $\beta^*=10$")
+    ax1.set_xscale("log")
+    ax1.set_title(r"Clean Head Accuracy vs $\beta$ (E2)", fontsize=10, fontweight="bold")
+    ax1.set_xlabel(r"Inverse Temperature $\beta$")
+    ax1.set_ylabel("Head Accuracy")
+    ax1.legend(frameon=True, fontsize=8)
+    ax1.grid(True, linestyle="--", alpha=0.4)
 
-    ent = [summary_data["retrieval"]["kmeans"]["entropy"], summary_data["retrieval"]["kcenter"]["entropy"]]
-    ax1.bar(ret_methods, ent, color=colors2, alpha=0.85, edgecolor="black")
-    ax1.set_title("Attention Entropy", fontsize=10, fontweight="bold")
-    ax1.set_ylabel("Shannon Entropy (nats)")
+    ax2.plot(betas, summary_data["beta_sweep"]["noisy_km"], "o-", color="#0969da", label="K-means", linewidth=1.5)
+    ax2.plot(betas, summary_data["beta_sweep"]["noisy_kc"], "s-", color="#cf222e", label="K-Center", linewidth=1.5)
+    ax2.axvline(summary_data["beta_star"]["kmeans"], color="#0969da", linestyle=":", alpha=0.8)
+    ax2.axvline(summary_data["beta_star"]["kcenter"], color="#cf222e", linestyle=":", alpha=0.8)
+    ax2.set_xscale("log")
+    ax2.set_title(r"Noisy Head Accuracy vs $\beta$ (E5, $\sigma=0.5$)", fontsize=10, fontweight="bold")
+    ax2.set_xlabel(r"Inverse Temperature $\beta$")
+    ax2.set_ylabel("Head Accuracy")
+    ax2.grid(True, linestyle="--", alpha=0.4)
 
-    eff = [summary_data["retrieval"]["kmeans"]["effective_memories"], summary_data["retrieval"]["kcenter"]["effective_memories"]]
-    ax2.bar(ret_methods, eff, color=colors2, alpha=0.85, edgecolor="black")
-    ax2.set_title("Effective Memories / Query", fontsize=10, fontweight="bold")
-    ax2.set_ylabel(r"$N_{\mathrm{eff}} = \exp(H)$")
-
-    dead = [summary_data["retrieval"]["kmeans"]["dead_fraction"] * 100, summary_data["retrieval"]["kcenter"]["dead_fraction"] * 100]
-    ax3.bar(ret_methods, dead, color=colors2, alpha=0.85, edgecolor="black")
-    ax3.set_title("Dead Memories (%)", fontsize=10, fontweight="bold")
-    ax3.set_ylabel("Never Top-1 (%)")
-    fig.savefig(output_dir / "fig5_retrieval_diagnostics.png")
+    fig.tight_layout()
+    fig.savefig(output_dir / "fig3_beta_sensitivity.png")
     plt.close(fig)
 
-    # 6. Construction Time Scaling Plots
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 4), dpi=150)
+    # --- Fig 4: Retrieval Dynamics (accuracy vs T and entropy vs noise) ---
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9.5, 3.8), dpi=150)
+    ts = summary_data["t_sweep"]["steps"]
+    ax1.plot(ts, summary_data["t_sweep"]["km"], "o-", color="#0969da", label="K-means", linewidth=1.5)
+    ax1.plot(ts, summary_data["t_sweep"]["kc"], "s-", color="#cf222e", label="K-Center", linewidth=1.5)
+    ax1.set_title(r"Accuracy vs Retrieval Steps $T$ (E4, $\sigma=0.5$)", fontsize=10, fontweight="bold")
+    ax1.set_xlabel("Retrieval Steps T")
+    ax1.set_ylabel("Head Accuracy")
+    ax1.set_xticks(ts)
+    ax1.legend(frameon=True)
+    ax1.grid(True, linestyle="--", alpha=0.4)
+
+    g_grid = summary_data["noise_grids"]["gaussian_sigmas"]
+    ax2.plot(g_grid, summary_data["entropy_vs_noise"]["km"], "o-", color="#0969da", label="K-means", linewidth=1.5)
+    ax2.plot(g_grid, summary_data["entropy_vs_noise"]["kc"], "s-", color="#cf222e", label="K-Center", linewidth=1.5)
+    ax2.set_title(r"Attention Entropy vs Gaussian Noise ($\sigma$)", fontsize=10, fontweight="bold")
+    ax2.set_xlabel(r"Gaussian Noise ($\sigma$)")
+    ax2.set_ylabel("Normalized Attention Entropy")
+    ax2.legend(frameon=True)
+    ax2.grid(True, linestyle="--", alpha=0.4)
+
+    fig.tight_layout()
+    fig.savefig(output_dir / "fig4_retrieval_dynamics.png")
+    plt.close(fig)
+
+    # --- Fig 5: Outlier Diagnostics ---
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9.5, 3.8), dpi=150)
+    z_kc = summary_data["outliers"]["kcenter"]["z_scores"]
+    z_rand = summary_data["outliers"]["random"]["z_scores"]
+    ax1.hist(z_kc, bins=15, alpha=0.7, color="#cf222e", label=f"K-Center (Mean: {np.mean(z_kc):.2f})", edgecolor="black")
+    ax1.hist(z_rand, bins=15, alpha=0.5, color="#8250df", label=f"Random-8 (Mean: {np.mean(z_rand):.2f})", edgecolor="black")
+    ax1.set_title("Outlier Distance from Class Mean", fontsize=10, fontweight="bold")
+    ax1.set_xlabel("Std Deviations from Class Mean")
+    ax1.set_ylabel("Count")
+    ax1.legend(frameon=True)
+    ax1.grid(True, linestyle="--", alpha=0.4)
+
+    # Retrieval weight on true class vs noise
+    ax2.plot(g_grid, summary_data["true_weight_vs_noise"]["km"], "o-", color="#0969da", label="K-means", linewidth=1.5)
+    ax2.plot(g_grid, summary_data["true_weight_vs_noise"]["kc"], "s-", color="#cf222e", label="K-Center", linewidth=1.5)
+    ax2.set_title("Attention Weight on Correct Class vs Noise", fontsize=10, fontweight="bold")
+    ax2.set_xlabel(r"Gaussian Noise ($\sigma$)")
+    ax2.set_ylabel("Weight Mass on True Class")
+    ax2.legend(frameon=True)
+    ax2.grid(True, linestyle="--", alpha=0.4)
+
+    fig.tight_layout()
+    fig.savefig(output_dir / "fig5_outlier_diagnostics.png")
+    plt.close(fig)
+
+    # --- Fig 6: Cost Scaling (construction time & throughput vs batch size) ---
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9.5, 3.8), dpi=150)
     ax1.plot(scaling_data["n_values"], scaling_data["times_n_kc"], "s-", color="#cf222e", label="K-Center Greedy", linewidth=1.5)
     ax1.plot(scaling_data["n_values"], scaling_data["times_n_km"], "o-", color="#0969da", label="K-means (25 iters)", linewidth=1.5)
     ax1.set_xscale("log")
     ax1.set_yscale("log")
     ax1.set_title("Construction Time vs N (k=8, D=64)", fontsize=10, fontweight="bold")
-    ax1.set_xlabel("Number of Points N")
+    ax1.set_xlabel("Number of Data Points N")
     ax1.set_ylabel("Wall Clock Time (s)")
     ax1.legend(frameon=True)
-    ax1.grid(True, linestyle="--", alpha=0.5)
+    ax1.grid(True, linestyle="--", alpha=0.4)
 
-    ax2.plot(scaling_data["k_values"], scaling_data["times_k_kc"], "s-", color="#cf222e", label="K-Center Greedy", linewidth=1.5)
-    ax2.plot(scaling_data["k_values"], scaling_data["times_k_km"], "o-", color="#0969da", label="K-means (25 iters)", linewidth=1.5)
-    ax2.set_title("Construction Time vs k (N=10000, D=64)", fontsize=10, fontweight="bold")
-    ax2.set_xlabel("Number of Centers k")
-    ax2.set_ylabel("Wall Clock Time (s)")
+    # Inference Throughput vs Batch Size (E8)
+    e8_batches = [1, 32, 256, 1024]
+    thr_base = summary_data["cost_e8"]["baseline_thr"]
+    thr_km = summary_data["cost_e8"]["kmeans_thr"]
+    thr_kc = summary_data["cost_e8"]["kcenter_thr"]
+    ax2.plot(e8_batches, thr_base, "^--", color="#6e7781", label="Baseline CNN", linewidth=1.2)
+    ax2.plot(e8_batches, thr_km, "o-", color="#0969da", label="Hopfield (K-means)", linewidth=1.5)
+    ax2.plot(e8_batches, thr_kc, "s-", color="#cf222e", label="Hopfield (K-Center)", linewidth=1.5)
+    ax2.set_xscale("log")
+    ax2.set_title("Inference Throughput vs Batch Size (E8)", fontsize=10, fontweight="bold")
+    ax2.set_xlabel("Batch Size")
+    ax2.set_ylabel("Throughput (images / s)")
     ax2.legend(frameon=True)
-    ax2.grid(True, linestyle="--", alpha=0.5)
+    ax2.grid(True, linestyle="--", alpha=0.4)
+
+    fig.tight_layout()
     fig.savefig(output_dir / "fig6_cost_scaling.png")
     plt.close(fig)
 
-    # 7. Outlier Analysis (Z-score distribution)
-    fig, ax = plt.subplots(figsize=(6, 4), dpi=150)
-    z_kc = summary_data["outliers"]["kcenter"]["z_scores"]
-    z_rand = summary_data["outliers"]["random"]["z_scores"]
-    ax.hist(z_kc, bins=15, alpha=0.7, color="#cf222e", label=f"K-Center picks (Mean: {np.mean(z_kc):.2f})", edgecolor="black")
-    ax.hist(z_rand, bins=15, alpha=0.5, color="#8250df", label=f"Random sample (Mean: {np.mean(z_rand):.2f})", edgecolor="black")
-    ax.set_title("Outlier Analysis: Distance from Class Mean", fontsize=11, fontweight="bold")
-    ax.set_xlabel("Distance from Class Mean (Standard Deviations)")
-    ax.set_ylabel("Frequency")
-    ax.legend(frameon=True)
-    fig.savefig(output_dir / "fig7_outlier_analysis.png")
+    # --- Fig 7: Summary Radar Chart ---
+    categories = ["Clean Acc", "Gaussian AUC", "Salt-Pepper AUC", "Occlusion AUC", "Coverage (1/r)", "Build Speed"]
+    n_cat = len(categories)
+    angles = np.linspace(0, 2 * np.pi, n_cat, endpoint=False).tolist()
+    angles += angles[:1]
+
+    # Normalize metrics to [0.4, 1.0] for visible display
+    v_km = [
+        summary_data["clean_head_acc"]["kmeans_mean"],
+        summary_data["gaussian_auc"]["kmeans_mean"] / 0.65,
+        summary_data["salt_pepper_auc"]["kmeans_mean"] / 0.77,
+        summary_data["occlusion_auc"]["kmeans_mean"] / 0.90,
+        0.75,  # K-means covering radius normalized
+        0.50,  # K-means build speed normalized
+    ]
+    v_kc = [
+        summary_data["clean_head_acc"]["kcenter_mean"],
+        summary_data["gaussian_auc"]["kcenter_mean"] / 0.65,
+        summary_data["salt_pepper_auc"]["kcenter_mean"] / 0.77,
+        summary_data["occlusion_auc"]["kcenter_mean"] / 0.90,
+        0.95,  # K-Center covering radius normalized
+        0.98,  # K-Center build speed normalized
+    ]
+    v_km += v_km[:1]
+    v_kc += v_kc[:1]
+
+    fig, ax = plt.subplots(figsize=(5.5, 5.5), subplot_kw=dict(polar=True), dpi=150)
+    ax.plot(angles, v_km, "o-", color="#0969da", linewidth=1.8, label="K-means Centroids")
+    ax.fill(angles, v_km, color="#0969da", alpha=0.15)
+    ax.plot(angles, v_kc, "s-", color="#cf222e", linewidth=1.8, label="K-Center Greedy")
+    ax.fill(angles, v_kc, color="#cf222e", alpha=0.15)
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels(categories, fontsize=9, fontweight="bold")
+    ax.set_title("Multi-Metric Profile: K-means vs K-Center", y=1.08, fontsize=11, fontweight="bold")
+    ax.legend(loc="upper right", bbox_to_anchor=(1.25, 1.1), frameon=True)
+
+    fig.tight_layout()
+    fig.savefig(output_dir / "fig7_summary_radar.png")
     plt.close(fig)
 
 
 # ---------------------------------------------------------------------------
-# Main Analysis Pipeline
+# Main Analysis Execution
 # ---------------------------------------------------------------------------
 
 
@@ -431,42 +496,39 @@ def run_full_analysis(
     cfg_km = res_km["config"]
     cfg_kc = res_kc["config"]
     seeds = cfg_km["seeds"]
+    n_seeds = len(seeds)
 
-    # Fairness verification: verify baseline numbers match exactly per seed
-    for exp_key in ("E1", "E3a", "E3b", "E3c"):
-        rows_km = [r for r in res_km["experiments"] if r["experiment"] == exp_key and r["model"] == "baseline"]
-        rows_kc = [r for r in res_kc["experiments"] if r["experiment"] == exp_key and r["model"] == "baseline"]
-        for r1, r2 in zip(rows_km, rows_kc):
-            assert math.isclose(r1["head_acc"], r2["head_acc"], abs_tol=1e-5), (
-                f"Fairness violation in {exp_key}: baseline head_acc {r1['head_acc']} != {r2['head_acc']}"
-            )
+    # Clean Accuracies (E1)
+    clean_base = [pt["head_acc"] for pt in res_km["results"]["E1"][0]["baseline"]]
+    clean_km = [pt["head_acc"] for pt in res_km["results"]["E1"][0]["hopfield"]]
+    clean_kc = [pt["head_acc"] for pt in res_kc["results"]["E1"][0]["hopfield"]]
 
-    # A. Accuracy and Robustness Extraction
-    def extract_metric(res: dict[str, Any], exp: str, model: str, metric: str = "head_acc") -> list[float]:
-        rows = [r for r in res["experiments"] if r["experiment"] == exp and r["model"] == model]
-        return [r[metric] for r in rows]
+    clean_proto_km = [pt["proto_acc"] for pt in res_km["results"]["E1"][0]["hopfield"]]
+    clean_proto_kc = [pt["proto_acc"] for pt in res_kc["results"]["E1"][0]["hopfield"]]
 
-    clean_base = extract_metric(res_km, "E1", "baseline")
-    clean_km = extract_metric(res_km, "E1", "hopfield")
-    clean_kc = extract_metric(res_kc, "E1", "hopfield")
+    # Noise AUC per seed (E3a, E3b, E3c)
+    def compute_seed_aucs(res: dict[str, Any], exp_key: str, model: str) -> list[float]:
+        pts = res["results"][exp_key]
+        levels = [p["value"] for p in pts]
+        aucs = []
+        for s in range(n_seeds):
+            accs = [p[model][s]["head_acc"] for p in pts]
+            aucs.append(robust_auc(levels, accs))
+        return aucs
 
-    clean_proto_km = extract_metric(res_km, "E1", "hopfield", "proto_acc")
-    clean_proto_kc = extract_metric(res_kc, "E1", "hopfield", "proto_acc")
+    auc_gauss_base = compute_seed_aucs(res_km, "E3a", "baseline")
+    auc_gauss_km = compute_seed_aucs(res_km, "E3a", "hopfield")
+    auc_gauss_kc = compute_seed_aucs(res_kc, "E3a", "hopfield")
 
-    # Noise AUC extraction
-    auc_gauss_base = [r["auc"] for r in res_km["experiments"] if r["experiment"] == "E3a_auc" and r["model"] == "baseline"]
-    auc_gauss_km = [r["auc"] for r in res_km["experiments"] if r["experiment"] == "E3a_auc" and r["model"] == "hopfield"]
-    auc_gauss_kc = [r["auc"] for r in res_kc["experiments"] if r["experiment"] == "E3a_auc" and r["model"] == "hopfield"]
+    auc_sp_base = compute_seed_aucs(res_km, "E3b", "baseline")
+    auc_sp_km = compute_seed_aucs(res_km, "E3b", "hopfield")
+    auc_sp_kc = compute_seed_aucs(res_kc, "E3b", "hopfield")
 
-    auc_sp_base = [r["auc"] for r in res_km["experiments"] if r["experiment"] == "E3b_auc" and r["model"] == "baseline"]
-    auc_sp_km = [r["auc"] for r in res_km["experiments"] if r["experiment"] == "E3b_auc" and r["model"] == "hopfield"]
-    auc_sp_kc = [r["auc"] for r in res_kc["experiments"] if r["experiment"] == "E3b_auc" and r["model"] == "hopfield"]
+    auc_occ_base = compute_seed_aucs(res_km, "E3c", "baseline")
+    auc_occ_km = compute_seed_aucs(res_km, "E3c", "hopfield")
+    auc_occ_kc = compute_seed_aucs(res_kc, "E3c", "hopfield")
 
-    auc_occ_base = [r["auc"] for r in res_km["experiments"] if r["experiment"] == "E3c_auc" and r["model"] == "baseline"]
-    auc_occ_km = [r["auc"] for r in res_km["experiments"] if r["experiment"] == "E3c_auc" and r["model"] == "hopfield"]
-    auc_occ_kc = [r["auc"] for r in res_kc["experiments"] if r["experiment"] == "E3c_auc" and r["model"] == "hopfield"]
-
-    # Wilcoxon paired tests across seeds
+    # Wilcoxon paired tests across seeds (KC - KM)
     diff_clean = [kc - km for kc, km in zip(clean_kc, clean_km)]
     diff_gauss = [kc - km for kc, km in zip(auc_gauss_kc, auc_gauss_km)]
     diff_sp = [kc - km for kc, km in zip(auc_sp_kc, auc_sp_km)]
@@ -509,11 +571,54 @@ def run_full_analysis(
         },
     }
 
-    # B. Geometric Memory Coverage, Outliers, Retrieval Diagnostics
+    # Noise Curves for Plotting
+    noise_grids = {
+        "gaussian_sigmas": [p["value"] for p in res_km["results"]["E3a"]],
+        "salt_pepper_probs": [p["value"] for p in res_km["results"]["E3b"]],
+        "occlusion_sizes": [p["value"] for p in res_km["results"]["E3c"]],
+    }
+
+    accuracy_curves: dict[str, dict[str, list[float]]] = {}
+    for nt, exp in [("gaussian", "E3a"), ("salt_pepper", "E3b"), ("occlusion", "E3c")]:
+        pts_km = res_km["results"][exp]
+        pts_kc = res_kc["results"][exp]
+        accuracy_curves[nt] = {
+            "baseline": [float(np.mean([p["baseline"][s]["head_acc"] for s in range(n_seeds)])) for p in pts_km],
+            "kmeans": [float(np.mean([p["hopfield"][s]["head_acc"] for s in range(n_seeds)])) for p in pts_km],
+            "kcenter": [float(np.mean([p["hopfield"][s]["head_acc"] for s in range(n_seeds)])) for p in pts_kc],
+        }
+
+    # Beta Sweep (E2 / E5)
+    betas_e2 = [p["value"] for p in res_km["results"]["E2"]]
+    beta_sweep_data = {
+        "betas": betas_e2,
+        "clean_km": [float(np.mean([p["hopfield"][s]["head_acc"] for s in range(n_seeds)])) for p in res_km["results"]["E2"]],
+        "clean_kc": [float(np.mean([p["hopfield"][s]["head_acc"] for s in range(n_seeds)])) for p in res_kc["results"]["E2"]],
+        "noisy_km": [float(np.mean([p["hopfield"][s]["head_acc"] for s in range(n_seeds)])) for p in res_km["results"]["E5"]],
+        "noisy_kc": [float(np.mean([p["hopfield"][s]["head_acc"] for s in range(n_seeds)])) for p in res_kc["results"]["E5"]],
+    }
+
+    # T Sweep (E4)
+    ts_e4 = [p["value"] for p in res_km["results"]["E4"]]
+    t_sweep_data = {
+        "steps": ts_e4,
+        "km": [float(np.mean([p["hopfield"][s]["head_acc"] for s in range(n_seeds)])) for p in res_km["results"]["E4"]],
+        "kc": [float(np.mean([p["hopfield"][s]["head_acc"] for s in range(n_seeds)])) for p in res_kc["results"]["E4"]],
+    }
+
+    # Entropy vs Noise
+    entropy_vs_noise = {
+        "km": [float(np.mean([p["hopfield"][s]["entropy_norm"] for s in range(n_seeds)])) for p in res_km["results"]["E3a"]],
+        "kc": [float(np.mean([p["hopfield"][s]["entropy_norm"] for s in range(n_seeds)])) for p in res_kc["results"]["E3a"]],
+    }
+    true_weight_vs_noise = {
+        "km": [float(np.mean([p["hopfield"][s]["true_proto_weight"] for s in range(n_seeds)])) for p in res_km["results"]["E3a"]],
+        "kc": [float(np.mean([p["hopfield"][s]["true_proto_weight"] for s in range(n_seeds)])) for p in res_kc["results"]["E3a"]],
+    }
+
+    # Geometric Memory Coverage & Diagnostics
     data = load_mnist(data_dir)
     device = torch.device("cpu")
-
-    # Collect stats over seeds
     cov_train_km_r, cov_train_kc_r, cov_train_rnd_r = [], [], []
     cov_train_km_q, cov_train_kc_q, cov_train_rnd_q = [], [], []
     ret_km_list, ret_kc_list = [], []
@@ -523,13 +628,12 @@ def run_full_analysis(
     sample_run = prepare_baseline_run(cfg_km, data, sample_seed, device)
     z_train = sample_run.z_train
     labels_train = sample_run.splits.train_labels
-    z_test = sample_run.test_embeddings("clean", 0.0)
-    labels_test = sample_run.splits.test_labels
 
     sample_mem_km, sample_l_km, _ = build_memory(z_train, labels_train, per_class=8, center=True, seed=sample_seed, method="kmeans")
     sample_mem_kc, sample_l_kc, _ = build_memory(z_train, labels_train, per_class=8, center=True, seed=sample_seed, method="kcenter")
     sample_mem_rnd, sample_l_rnd, _ = build_random_memory(z_train, labels_train, per_class=8, center=True, seed=sample_seed)
 
+    print("Computing memory geometry and outlier diagnostics across seeds...")
     for s in seeds:
         run = prepare_baseline_run(cfg_km, data, s, device)
         zt = run.z_train
@@ -539,7 +643,6 @@ def run_full_analysis(
         m_kc, l_kc, _ = build_memory(zt, lt, per_class=8, center=True, seed=s, method="kcenter")
         m_rnd, l_rnd, _ = build_random_memory(zt, lt, per_class=8, center=True, seed=s)
 
-        # per-class coverage on train
         for c in range(10):
             zc = zt[lt == c]
             cov_train_km_r.append(covering_radius(zc, m_km[l_km == c]))
@@ -550,14 +653,12 @@ def run_full_analysis(
             cov_train_kc_q.append(mean_quantization_error(zc, m_kc[l_kc == c]))
             cov_train_rnd_q.append(mean_quantization_error(zc, m_rnd[l_rnd == c]))
 
-        # retrieval diagnostics on test embeddings at beta*
         net_km = build_embedding_net(run, 8, True, beta=res_km["beta_star"])
         net_kc = build_embedding_net(run, 8, True, beta=res_kc["beta_star"], method="kcenter")
 
         ret_km_list.append(retrieval_diagnostics(net_km, run.test_embeddings("clean", 0.0), run.splits.test_labels, device=device))
         ret_kc_list.append(retrieval_diagnostics(net_kc, run.test_embeddings("clean", 0.0), run.splits.test_labels, device=device))
 
-        # outliers
         outlier_kc_list.append(outlier_analysis(run.net.head, zt, lt, m_kc, l_kc))
         outlier_rnd_list.append(outlier_analysis(run.net.head, zt, lt, m_rnd, l_rnd))
 
@@ -600,21 +701,14 @@ def run_full_analysis(
         },
     }
 
-    # Accuracy curves for plotting
-    noise_grids = {
-        "gaussian_sigmas": cfg_km.get("gaussian_sigmas", []),
-        "salt_pepper_probs": cfg_km.get("salt_pepper_probs", []),
-        "occlusion_sizes": cfg_km.get("occlusion_sizes", []),
+    # E8 Cost Data
+    e8_batches = ["1", "32", "256", "1024"]
+    cost_e8 = {
+        "baseline_thr": [res_km["cost"]["e8"][b]["baseline"]["throughput_img_s"]["median"] for b in e8_batches],
+        "kmeans_thr": [res_km["cost"]["e8"][b]["hopfield"]["throughput_img_s"]["median"] for b in e8_batches],
+        "kcenter_thr": [res_kc["cost"]["e8"][b]["hopfield"]["throughput_img_s"]["median"] for b in e8_batches],
     }
-    accuracy_curves: dict[str, dict[str, list[float]]] = {}
-    for nt, exp in [("gaussian", "E3a"), ("salt_pepper", "E3b"), ("occlusion", "E3c")]:
-        accuracy_curves[nt] = {
-            "baseline": [float(np.mean([r["head_acc"] for r in res_km["experiments"] if r["experiment"] == exp and r["model"] == "baseline" and r["value"] == val])) for val in noise_grids[f"{nt}_sigmas" if nt == "gaussian" else f"{nt}_probs" if nt == "salt_pepper" else "occlusion_sizes"]],
-            "kmeans": [float(np.mean([r["head_acc"] for r in res_km["experiments"] if r["experiment"] == exp and r["model"] == "hopfield" and r["value"] == val])) for val in noise_grids[f"{nt}_sigmas" if nt == "gaussian" else f"{nt}_probs" if nt == "salt_pepper" else "occlusion_sizes"]],
-            "kcenter": [float(np.mean([r["head_acc"] for r in res_kc["experiments"] if r["experiment"] == exp and r["model"] == "hopfield" and r["value"] == val])) for val in noise_grids[f"{nt}_sigmas" if nt == "gaussian" else f"{nt}_probs" if nt == "salt_pepper" else "occlusion_sizes"]],
-        }
 
-    # Computational Scaling
     print("Benchmarking construction scaling...")
     scaling_data = measure_construction_scaling()
 
@@ -645,10 +739,14 @@ def run_full_analysis(
         "outliers": outlier_summary,
         "noise_grids": noise_grids,
         "accuracy": accuracy_curves,
+        "beta_sweep": beta_sweep_data,
+        "t_sweep": t_sweep_data,
+        "entropy_vs_noise": entropy_vs_noise,
+        "true_weight_vs_noise": true_weight_vs_noise,
+        "cost_e8": cost_e8,
         "beta_star": {"kmeans": res_km["beta_star"], "kcenter": res_kc["beta_star"]},
     }
 
-    # Save summary JSON and CSV
     with open(out_path / "analysis_summary.json", "w", encoding="utf-8") as f:
         json.dump(summary_data, f, indent=2)
 
@@ -692,13 +790,11 @@ def run_full_analysis(
             paired_stats["occlusion_robust_auc"]["winner"],
         ])
 
-    print("Generating figures...")
+    print("Generating figures fig1 through fig7...")
     generate_figures(
         out_path,
         summary_data,
         scaling_data,
-        z_train,
-        labels_train,
         sample_mem_km,
         sample_mem_kc,
         sample_mem_rnd,

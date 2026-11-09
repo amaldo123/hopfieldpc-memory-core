@@ -61,6 +61,7 @@ NOISE_GRID_KEYS = {
     "occlusion": "occlusion_sizes",
 }
 PLACEMENTS = ("pixel", "embedding")
+MEMORY_METHODS = ("kmeans", "kcenter")
 DEVICES = ("auto", "cpu", "cuda")
 
 COST_KEYS = ("batch_size", "batch_sizes", "warmup", "iters", "repeats", "num_threads")
@@ -86,6 +87,7 @@ CONFIG_KEYS = (
     "placements",
     "center_prototypes",
     "prototypes_per_class",
+    "memory_method",
     "beta_selection_sets",
     "baseline_tuning",
     "cost",
@@ -346,6 +348,11 @@ def validate_mnist_config(config: dict[str, Any]) -> dict[str, Any]:
         )
 
     lr = _require_float("lr", config.get("lr", 1e-3), minimum=0.0, strict=True)
+    memory_method = config.get("memory_method", "kmeans")
+    if memory_method not in MEMORY_METHODS:
+        raise ValueError(
+            f"memory_method must be one of {MEMORY_METHODS}, got {memory_method!r}."
+        )
     center_prototypes = config.get("center_prototypes", True)
     if not isinstance(center_prototypes, bool):
         raise TypeError(
@@ -366,6 +373,7 @@ def validate_mnist_config(config: dict[str, Any]) -> dict[str, Any]:
         "epochs": _require_int("epochs", config.get("epochs", 3), minimum=1),
         "batch_size": _require_int("batch_size", config.get("batch_size", 128), minimum=1),
         "lr": lr,
+        "memory_method": memory_method,
         "eval_batch_size": _require_int(
             "eval_batch_size", config.get("eval_batch_size", 1000), minimum=1
         ),
@@ -816,17 +824,25 @@ def get_or_train_baseline(
     reports the wall time of the run that produced it. The returned net is in
     eval mode and is never optimized again ("frozen").
     """
-    path = Path(cfg["reports_dir"]) / f"backbone_seed{seed}.pt"
+    target_path = Path(cfg["reports_dir"]) / f"backbone_seed{seed}.pt"
+    load_path = target_path
+    if not load_path.exists() and cfg.get("reports_dir") == "reports/mnist_kcenter":
+        fallback = Path("reports/mnist_prototype_retrieval") / f"backbone_seed{seed}.pt"
+        if fallback.exists():
+            load_path = fallback
     fingerprint = checkpoint_fingerprint(cfg, seed, splits.train_images.shape[0])
     net = build_baseline_net(seed)
 
-    if path.exists() and not retrain:
-        payload = torch.load(path, map_location="cpu", weights_only=True)
+    if load_path.exists() and not retrain:
+        payload = torch.load(load_path, map_location="cpu", weights_only=True)
         if payload.get("fingerprint") == fingerprint:
             net.load_state_dict(payload["state_dict"])
-            print(f"  seed {seed}: loaded cached backbone {path}")
+            print(f"  seed {seed}: loaded cached backbone {load_path}")
+            if load_path != target_path:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                torch.save(payload, target_path)
             return net.to(device).eval(), float(payload["train_time_s"]), True
-        print(f"  seed {seed}: cached backbone {path} has different settings; retraining")
+        print(f"  seed {seed}: cached backbone {load_path} has different settings; retraining")
 
     print(f"  seed {seed}: training baseline on {splits.train_images.shape[0]} clean images")
     train_time_s = train_baseline(
@@ -937,18 +953,27 @@ def tune_baseline(
     if tuning is None:
         return None
     sets = cfg["beta_selection_sets"]
-    path = Path(cfg["reports_dir"]) / "baseline_tuning.json"
+    target_path = Path(cfg["reports_dir"]) / "baseline_tuning.json"
+    load_path = target_path
+    if not load_path.exists() and cfg.get("reports_dir") == "reports/mnist_kcenter":
+        fallback = Path("reports/mnist_prototype_retrieval") / "baseline_tuning.json"
+        if fallback.exists():
+            load_path = fallback
     first = make_splits(data, seed=tuning["seeds"][0], val_size=cfg["val_size"],
                         train_subset=cfg["train_subset"])
     fingerprint = _tuning_fingerprint(cfg, first.train_images.shape[0])
 
     result: dict[str, Any] | None = None
-    if path.exists() and not retrain:
-        with open(path, encoding="utf-8") as f:
+    if load_path.exists() and not retrain:
+        with open(load_path, encoding="utf-8") as f:
             cached = json.load(f)
         if cached.get("fingerprint") == json.loads(json.dumps(fingerprint)):
-            print(f"Baseline tuning: loaded cached result {path}")
+            print(f"Baseline tuning: loaded cached result {load_path}")
             result = cached
+            if load_path != target_path:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(target_path, "w", encoding="utf-8") as f:
+                    json.dump(result, f, indent=2)
 
     if result is None:
         scores: dict[tuple[float, int, int], list[dict[str, float]]] = {}
@@ -1009,8 +1034,8 @@ def tune_baseline(
             "best_scores": {k: best[k] for k in ("val_clean", "val_score")},
             "untuned": untuned,
         }
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(target_path, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2)
 
     cfg.update(result["best"])

@@ -156,10 +156,16 @@ Timings only compare within one run; on CPU, peak memory is an activation upper 
 
 ### K-Center Greedy Memory Option
 
-An alternative memory option selects diverse real embeddings via K-Center Greedy farthest-point traversal (Sener & Savarese 2018, arXiv:1708.00489) via `memory_method: kcenter`. The default behavior remains strictly unchanged (`kmeans` centroids). Run it with `configs/mnist_kcenter.yaml` and analyze results with `benchmarks/kcenter_analysis.py`:
+An alternative memory option selects diverse real embeddings via K-Center Greedy farthest-point traversal (Sener & Savarese 2018, arXiv:1708.00489) via `memory_method: kcenter`. The default behavior remains strictly unchanged (`kmeans` centroids). Both runs should be executed to enable paired comparative analysis:
 
 ```bash
+# Prerequisite: run the baseline K-means experiment first to produce baseline checkpoints and results:
+python -m benchmarks.mnist_prototype_retrieval --config configs/mnist_prototype_retrieval.yaml
+
+# Run the K-Center greedy experiment (reuses baseline backbones for fair evaluation):
 python -m benchmarks.mnist_prototype_retrieval --config configs/mnist_kcenter.yaml
+
+# Run the paired comparative analysis:
 python -m benchmarks.kcenter_analysis
 ```
 

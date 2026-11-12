@@ -9,44 +9,39 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import math
 import time
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from torch import nn
 
 from benchmarks.mnist_baseline import (
-    NOISE_TYPES,
-    BaselineRun,
     ClassifierHead,
     MnistNet,
-    copy_net,
     load_mnist,
     prepare_baseline_run,
-    validate_mnist_config,
 )
 from benchmarks.mnist_prototype_retrieval import (
-    HopfieldBridge,
-    beta_curve,
     build_embedding_net,
-    build_hopfield_net,
     build_memory,
-    compare_on_test,
     covering_radius,
     forward_embeddings,
     k_center_greedy,
     kmeans,
-    mcnemar_exact_p,
     robust_auc,
-    select_beta,
     wilcoxon_signed_rank_p,
 )
+
+
+def extract_beta_star(val: Any) -> float:
+    """Extract scalar beta* value whether stored as float/int or per-placement dict."""
+    if isinstance(val, dict):
+        return float(val.get("embedding", next(iter(val.values()))))
+    return float(val)
 
 
 # ---------------------------------------------------------------------------
@@ -325,8 +320,10 @@ def generate_figures(
     betas = summary_data["beta_sweep"]["betas"]
     ax1.plot(betas, summary_data["beta_sweep"]["clean_km"], "o-", color="#0969da", label="K-means", linewidth=1.5)
     ax1.plot(betas, summary_data["beta_sweep"]["clean_kc"], "s-", color="#cf222e", label="K-Center", linewidth=1.5)
-    ax1.axvline(summary_data["beta_star"]["kmeans"], color="#0969da", linestyle=":", alpha=0.8, label=r"KM $\beta^*=50$")
-    ax1.axvline(summary_data["beta_star"]["kcenter"], color="#cf222e", linestyle=":", alpha=0.8, label=r"KC $\beta^*=10$")
+    b_km_val = extract_beta_star(summary_data["beta_star"]["kmeans"])
+    b_kc_val = extract_beta_star(summary_data["beta_star"]["kcenter"])
+    ax1.axvline(b_km_val, color="#0969da", linestyle=":", alpha=0.8, label=rf"KM $\beta^*={b_km_val:g}$")
+    ax1.axvline(b_kc_val, color="#cf222e", linestyle=":", alpha=0.8, label=rf"KC $\beta^*={b_kc_val:g}$")
     ax1.set_xscale("log")
     ax1.set_title(r"Clean Head Accuracy vs $\beta$ (E2)", fontsize=10, fontweight="bold")
     ax1.set_xlabel(r"Inverse Temperature $\beta$")
@@ -336,8 +333,8 @@ def generate_figures(
 
     ax2.plot(betas, summary_data["beta_sweep"]["noisy_km"], "o-", color="#0969da", label="K-means", linewidth=1.5)
     ax2.plot(betas, summary_data["beta_sweep"]["noisy_kc"], "s-", color="#cf222e", label="K-Center", linewidth=1.5)
-    ax2.axvline(summary_data["beta_star"]["kmeans"], color="#0969da", linestyle=":", alpha=0.8)
-    ax2.axvline(summary_data["beta_star"]["kcenter"], color="#cf222e", linestyle=":", alpha=0.8)
+    ax2.axvline(b_km_val, color="#0969da", linestyle=":", alpha=0.8)
+    ax2.axvline(b_kc_val, color="#cf222e", linestyle=":", alpha=0.8)
     ax2.set_xscale("log")
     ax2.set_title(r"Noisy Head Accuracy vs $\beta$ (E5, $\sigma=0.5$)", fontsize=10, fontweight="bold")
     ax2.set_xlabel(r"Inverse Temperature $\beta$")
@@ -375,10 +372,12 @@ def generate_figures(
 
     # --- Fig 5: Outlier Diagnostics ---
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9.5, 3.8), dpi=150)
+    z_km = summary_data["outliers"]["kmeans"]["z_scores"]
     z_kc = summary_data["outliers"]["kcenter"]["z_scores"]
     z_rand = summary_data["outliers"]["random"]["z_scores"]
-    ax1.hist(z_kc, bins=15, alpha=0.7, color="#cf222e", label=f"K-Center (Mean: {np.mean(z_kc):.2f})", edgecolor="black")
-    ax1.hist(z_rand, bins=15, alpha=0.5, color="#8250df", label=f"Random-8 (Mean: {np.mean(z_rand):.2f})", edgecolor="black")
+    ax1.hist(z_km, bins=15, alpha=0.5, color="#0969da", label=f"K-means (Mean: {np.mean(z_km):.2f})", edgecolor="black")
+    ax1.hist(z_kc, bins=15, alpha=0.6, color="#cf222e", label=f"K-Center (Mean: {np.mean(z_kc):.2f})", edgecolor="black")
+    ax1.hist(z_rand, bins=15, alpha=0.4, color="#8250df", label=f"Random-8 (Mean: {np.mean(z_rand):.2f})", edgecolor="black")
     ax1.set_title("Outlier Distance from Class Mean", fontsize=10, fontweight="bold")
     ax1.set_xlabel("Std Deviations from Class Mean")
     ax1.set_ylabel("Count")
@@ -411,7 +410,7 @@ def generate_figures(
     ax1.grid(True, linestyle="--", alpha=0.4)
 
     # Inference Throughput vs Batch Size (E8)
-    e8_batches = [1, 32, 256, 1024]
+    e8_batches = summary_data["cost_e8"]["batch_sizes"]
     thr_base = summary_data["cost_e8"]["baseline_thr"]
     thr_km = summary_data["cost_e8"]["kmeans_thr"]
     thr_kc = summary_data["cost_e8"]["kcenter_thr"]
@@ -435,22 +434,39 @@ def generate_figures(
     angles = np.linspace(0, 2 * np.pi, n_cat, endpoint=False).tolist()
     angles += angles[:1]
 
-    # Normalize metrics to [0.4, 1.0] for visible display
+    # Compute coverage efficiency (1/radius) and build speed (1/time) from real empirical measurements
+    r_km = summary_data["coverage"]["train"]["kmeans"]["radius_mean"]
+    r_kc = summary_data["coverage"]["train"]["kcenter"]["radius_mean"]
+    inv_r_max = max(1.0 / r_km, 1.0 / r_kc) if max(r_km, r_kc) > 0 else 1.0
+    cov_km_norm = (1.0 / r_km) / inv_r_max if r_km > 0 else 0.5
+    cov_kc_norm = (1.0 / r_kc) / inv_r_max if r_kc > 0 else 0.5
+
+    t_km = scaling_data["times_n_km"][-1]
+    t_kc = scaling_data["times_n_kc"][-1]
+    inv_t_max = max(1.0 / t_km, 1.0 / t_kc) if max(t_km, t_kc) > 0 else 1.0
+    spd_km_norm = (1.0 / t_km) / inv_t_max if t_km > 0 else 0.5
+    spd_kc_norm = (1.0 / t_kc) / inv_t_max if t_kc > 0 else 0.5
+
+    # Normalize AUC metrics dynamically against reference maximum
+    max_gauss = max(summary_data["gaussian_auc"]["kmeans_mean"], summary_data["gaussian_auc"]["kcenter_mean"], summary_data["gaussian_auc"]["baseline_mean"])
+    max_sp = max(summary_data["salt_pepper_auc"]["kmeans_mean"], summary_data["salt_pepper_auc"]["kcenter_mean"], summary_data["salt_pepper_auc"]["baseline_mean"])
+    max_occ = max(summary_data["occlusion_auc"]["kmeans_mean"], summary_data["occlusion_auc"]["kcenter_mean"], summary_data["occlusion_auc"]["baseline_mean"])
+
     v_km = [
         summary_data["clean_head_acc"]["kmeans_mean"],
-        summary_data["gaussian_auc"]["kmeans_mean"] / 0.65,
-        summary_data["salt_pepper_auc"]["kmeans_mean"] / 0.77,
-        summary_data["occlusion_auc"]["kmeans_mean"] / 0.90,
-        0.75,  # K-means covering radius normalized
-        0.50,  # K-means build speed normalized
+        summary_data["gaussian_auc"]["kmeans_mean"] / (max_gauss if max_gauss > 0 else 1.0),
+        summary_data["salt_pepper_auc"]["kmeans_mean"] / (max_sp if max_sp > 0 else 1.0),
+        summary_data["occlusion_auc"]["kmeans_mean"] / (max_occ if max_occ > 0 else 1.0),
+        cov_km_norm,
+        spd_km_norm,
     ]
     v_kc = [
         summary_data["clean_head_acc"]["kcenter_mean"],
-        summary_data["gaussian_auc"]["kcenter_mean"] / 0.65,
-        summary_data["salt_pepper_auc"]["kcenter_mean"] / 0.77,
-        summary_data["occlusion_auc"]["kcenter_mean"] / 0.90,
-        0.95,  # K-Center covering radius normalized
-        0.98,  # K-Center build speed normalized
+        summary_data["gaussian_auc"]["kcenter_mean"] / (max_gauss if max_gauss > 0 else 1.0),
+        summary_data["salt_pepper_auc"]["kcenter_mean"] / (max_sp if max_sp > 0 else 1.0),
+        summary_data["occlusion_auc"]["kcenter_mean"] / (max_occ if max_occ > 0 else 1.0),
+        cov_kc_norm,
+        spd_kc_norm,
     ]
     v_km += v_km[:1]
     v_kc += v_kc[:1]
@@ -495,6 +511,22 @@ def run_full_analysis(
 
     cfg_km = res_km["config"]
     cfg_kc = res_kc["config"]
+    if cfg_km["seeds"] != cfg_kc["seeds"]:
+        raise ValueError(f"Mismatched seeds: {cfg_km['seeds']} vs {cfg_kc['seeds']}")
+    for grid_key in ("gaussian_sigmas", "salt_pepper_probs", "occlusion_sizes"):
+        if cfg_km.get(grid_key) != cfg_kc.get(grid_key):
+            raise ValueError(f"Mismatched grid for {grid_key}: {cfg_km.get(grid_key)} vs {cfg_kc.get(grid_key)}")
+
+    # Fairness check: CNN baseline evaluations must match across runs
+    base_km_e1 = [pt["head_acc"] for pt in res_km["results"]["E1"][0]["baseline"]]
+    base_kc_e1 = [pt["head_acc"] for pt in res_kc["results"]["E1"][0]["baseline"]]
+    for s_idx, (b1, b2) in enumerate(zip(base_km_e1, base_kc_e1)):
+        if abs(b1 - b2) > 1e-4:
+            raise ValueError(
+                f"Fairness violation: seed {cfg_km['seeds'][s_idx]} baseline head_acc mismatch "
+                f"({b1:.4f} vs {b2:.4f}). Runs must share the same frozen backbone weights."
+            )
+
     seeds = cfg_km["seeds"]
     n_seeds = len(seeds)
 
@@ -621,17 +653,17 @@ def run_full_analysis(
     device = torch.device("cpu")
     cov_train_km_r, cov_train_kc_r, cov_train_rnd_r = [], [], []
     cov_train_km_q, cov_train_kc_q, cov_train_rnd_q = [], [], []
+    entropy_km, entropy_kc, entropy_rnd = [], [], []
+    cov_frac_km, cov_frac_kc, cov_frac_rnd = [], [], []
+    pw_mean_km, pw_mean_kc, pw_mean_rnd = [], [], []
+    pw_min_km, pw_min_kc, pw_min_rnd = [], [], []
+    margin_km, margin_kc, margin_rnd = [], [], []
     ret_km_list, ret_kc_list = [], []
-    outlier_kc_list, outlier_rnd_list = [], []
+    outlier_km_list, outlier_kc_list, outlier_rnd_list = [], [], []
 
-    sample_seed = seeds[0]
-    sample_run = prepare_baseline_run(cfg_km, data, sample_seed, device)
-    z_train = sample_run.z_train
-    labels_train = sample_run.splits.train_labels
-
-    sample_mem_km, sample_l_km, _ = build_memory(z_train, labels_train, per_class=8, center=True, seed=sample_seed, method="kmeans")
-    sample_mem_kc, sample_l_kc, _ = build_memory(z_train, labels_train, per_class=8, center=True, seed=sample_seed, method="kcenter")
-    sample_mem_rnd, sample_l_rnd, _ = build_random_memory(z_train, labels_train, per_class=8, center=True, seed=sample_seed)
+    sample_mem_km: torch.Tensor | None = None
+    sample_mem_kc: torch.Tensor | None = None
+    sample_mem_rnd: torch.Tensor | None = None
 
     print("Computing memory geometry and outlier diagnostics across seeds...")
     for s in seeds:
@@ -643,33 +675,72 @@ def run_full_analysis(
         m_kc, l_kc, _ = build_memory(zt, lt, per_class=8, center=True, seed=s, method="kcenter")
         m_rnd, l_rnd, _ = build_random_memory(zt, lt, per_class=8, center=True, seed=s)
 
+        if sample_mem_km is None:
+            sample_mem_km = m_km
+            sample_mem_kc = m_kc
+            sample_mem_rnd = m_rnd
+
+        margin_km.append(inter_class_margin(m_km, l_km))
+        margin_kc.append(inter_class_margin(m_kc, l_kc))
+        margin_rnd.append(inter_class_margin(m_rnd, l_rnd))
+
         for c in range(10):
             zc = zt[lt == c]
-            cov_train_km_r.append(covering_radius(zc, m_km[l_km == c]))
-            cov_train_kc_r.append(covering_radius(zc, m_kc[l_kc == c]))
-            cov_train_rnd_r.append(covering_radius(zc, m_rnd[l_rnd == c]))
+            r_km = covering_radius(zc, m_km[l_km == c])
+            r_kc = covering_radius(zc, m_kc[l_kc == c])
+            r_rnd = covering_radius(zc, m_rnd[l_rnd == c])
+            cov_train_km_r.append(r_km)
+            cov_train_kc_r.append(r_kc)
+            cov_train_rnd_r.append(r_rnd)
 
             cov_train_km_q.append(mean_quantization_error(zc, m_km[l_km == c]))
             cov_train_kc_q.append(mean_quantization_error(zc, m_kc[l_kc == c]))
             cov_train_rnd_q.append(mean_quantization_error(zc, m_rnd[l_rnd == c]))
 
-        net_km = build_embedding_net(run, 8, True, beta=res_km["beta_star"])
-        net_kc = build_embedding_net(run, 8, True, beta=res_kc["beta_star"], method="kcenter")
+            entropy_km.append(cell_balance_entropy(zc, m_km[l_km == c]))
+            entropy_kc.append(cell_balance_entropy(zc, m_kc[l_kc == c]))
+            entropy_rnd.append(cell_balance_entropy(zc, m_rnd[l_rnd == c]))
+
+            cov_frac_km.append(coverage_fraction(zc, m_km[l_km == c], r=r_kc))
+            cov_frac_kc.append(coverage_fraction(zc, m_kc[l_kc == c], r=r_kc))
+            cov_frac_rnd.append(coverage_fraction(zc, m_rnd[l_rnd == c], r=r_kc))
+
+            pm_km, pmin_km = pairwise_distances(m_km[l_km == c])
+            pm_kc, pmin_kc = pairwise_distances(m_kc[l_kc == c])
+            pm_rnd, pmin_rnd = pairwise_distances(m_rnd[l_rnd == c])
+            pw_mean_km.append(pm_km)
+            pw_mean_kc.append(pm_kc)
+            pw_mean_rnd.append(pm_rnd)
+            pw_min_km.append(pmin_km)
+            pw_min_kc.append(pmin_kc)
+            pw_min_rnd.append(pmin_rnd)
+
+        bstar_km = extract_beta_star(res_km["beta_star"])
+        bstar_kc = extract_beta_star(res_kc["beta_star"])
+        net_km = build_embedding_net(run, 8, True, beta=bstar_km)
+        net_kc = build_embedding_net(run, 8, True, beta=bstar_kc, method="kcenter")
 
         ret_km_list.append(retrieval_diagnostics(net_km, run.test_embeddings("clean", 0.0), run.splits.test_labels, device=device))
         ret_kc_list.append(retrieval_diagnostics(net_kc, run.test_embeddings("clean", 0.0), run.splits.test_labels, device=device))
 
+        outlier_km_list.append(outlier_analysis(run.net.head, zt, lt, m_km, l_km))
         outlier_kc_list.append(outlier_analysis(run.net.head, zt, lt, m_kc, l_kc))
         outlier_rnd_list.append(outlier_analysis(run.net.head, zt, lt, m_rnd, l_rnd))
 
     coverage_summary = {
         "train": {
             "kmeans": {"radius_mean": float(np.mean(cov_train_km_r)), "radius_std": float(np.std(cov_train_km_r)),
-                       "mqe_mean": float(np.mean(cov_train_km_q)), "mqe_std": float(np.std(cov_train_km_q))},
+                       "mqe_mean": float(np.mean(cov_train_km_q)), "mqe_std": float(np.std(cov_train_km_q)),
+                       "cell_entropy_mean": float(np.mean(entropy_km)), "coverage_frac_mean": float(np.mean(cov_frac_km)),
+                       "pairwise_mean": float(np.mean(pw_mean_km)), "margin_mean": float(np.mean(margin_km))},
             "kcenter": {"radius_mean": float(np.mean(cov_train_kc_r)), "radius_std": float(np.std(cov_train_kc_r)),
-                        "mqe_mean": float(np.mean(cov_train_kc_q)), "mqe_std": float(np.std(cov_train_kc_q))},
+                        "mqe_mean": float(np.mean(cov_train_kc_q)), "mqe_std": float(np.std(cov_train_kc_q)),
+                        "cell_entropy_mean": float(np.mean(entropy_kc)), "coverage_frac_mean": float(np.mean(cov_frac_kc)),
+                        "pairwise_mean": float(np.mean(pw_mean_kc)), "margin_mean": float(np.mean(margin_kc))},
             "random": {"radius_mean": float(np.mean(cov_train_rnd_r)), "radius_std": float(np.std(cov_train_rnd_r)),
-                       "mqe_mean": float(np.mean(cov_train_rnd_q)), "mqe_std": float(np.std(cov_train_rnd_q))},
+                       "mqe_mean": float(np.mean(cov_train_rnd_q)), "mqe_std": float(np.std(cov_train_rnd_q)),
+                       "cell_entropy_mean": float(np.mean(entropy_rnd)), "coverage_frac_mean": float(np.mean(cov_frac_rnd)),
+                       "pairwise_mean": float(np.mean(pw_mean_rnd)), "margin_mean": float(np.mean(margin_rnd))},
         }
     }
 
@@ -689,6 +760,11 @@ def run_full_analysis(
     }
 
     outlier_summary = {
+        "kmeans": {
+            "misclassified_mean": float(np.mean([o["misclassified"] for o in outlier_km_list])),
+            "mean_z_score": float(np.mean([o["mean_z_score"] for o in outlier_km_list])),
+            "z_scores": outlier_km_list[0]["z_scores"],
+        },
         "kcenter": {
             "misclassified_mean": float(np.mean([o["misclassified"] for o in outlier_kc_list])),
             "mean_z_score": float(np.mean([o["mean_z_score"] for o in outlier_kc_list])),
@@ -701,12 +777,18 @@ def run_full_analysis(
         },
     }
 
-    # E8 Cost Data
-    e8_batches = ["1", "32", "256", "1024"]
+    # E8 Cost Data (handles both full runs and --quick runs)
+    e8_km = res_km.get("cost", {}).get("e8", {})
+    e8_kc = res_kc.get("cost", {}).get("e8", {})
+    common_batches_str = sorted(
+        [b for b in e8_km.keys() if b in e8_kc],
+        key=lambda x: int(x) if x.isdigit() else x,
+    )
     cost_e8 = {
-        "baseline_thr": [res_km["cost"]["e8"][b]["baseline"]["throughput_img_s"]["median"] for b in e8_batches],
-        "kmeans_thr": [res_km["cost"]["e8"][b]["hopfield"]["throughput_img_s"]["median"] for b in e8_batches],
-        "kcenter_thr": [res_kc["cost"]["e8"][b]["hopfield"]["throughput_img_s"]["median"] for b in e8_batches],
+        "batch_sizes": [int(b) for b in common_batches_str],
+        "baseline_thr": [e8_km[b]["baseline"]["throughput_img_s"]["median"] for b in common_batches_str],
+        "kmeans_thr": [e8_km[b]["hopfield"]["throughput_img_s"]["median"] for b in common_batches_str],
+        "kcenter_thr": [e8_kc[b]["hopfield"]["throughput_img_s"]["median"] for b in common_batches_str],
     }
 
     print("Benchmarking construction scaling...")
@@ -744,7 +826,7 @@ def run_full_analysis(
         "entropy_vs_noise": entropy_vs_noise,
         "true_weight_vs_noise": true_weight_vs_noise,
         "cost_e8": cost_e8,
-        "beta_star": {"kmeans": res_km["beta_star"], "kcenter": res_kc["beta_star"]},
+        "beta_star": {"kmeans": extract_beta_star(res_km["beta_star"]), "kcenter": extract_beta_star(res_kc["beta_star"])},
     }
 
     with open(out_path / "analysis_summary.json", "w", encoding="utf-8") as f:
@@ -791,6 +873,7 @@ def run_full_analysis(
         ])
 
     print("Generating figures fig1 through fig7...")
+    assert sample_mem_km is not None and sample_mem_kc is not None and sample_mem_rnd is not None
     generate_figures(
         out_path,
         summary_data,

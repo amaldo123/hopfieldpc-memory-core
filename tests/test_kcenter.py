@@ -26,7 +26,8 @@ def test_k_center_greedy_distinct_and_real_rows() -> None:
     assert len(set(idx.tolist())) == 10
     assert idx.dtype == torch.long
     for i in idx.tolist():
-        assert torch.equal(x[i], x[i])
+        assert 0 <= i < len(x)
+        assert any(torch.equal(x[i], row) for row in x)
 
 
 def test_k_center_greedy_step_by_step_farthest() -> None:
@@ -242,6 +243,8 @@ def test_config_memory_method_and_yaml_equality() -> None:
 
     del y1["reports_dir"]
     del y2["reports_dir"]
+    y1.get("quick", {}).pop("reports_dir", None)
+    y2.get("quick", {}).pop("reports_dir", None)
     y2.pop("memory_method", None)
     assert y1 == y2
 

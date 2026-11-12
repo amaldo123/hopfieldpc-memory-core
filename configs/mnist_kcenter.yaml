@@ -58,7 +58,7 @@ cost:
 
 # --quick overrides (cost merges per key).
 quick:
-  reports_dir: "reports/mnist_prototype_retrieval_quick"   # never overwrite full checkpoints
+  reports_dir: "reports/mnist_kcenter_quick"   # never overwrite full checkpoints
   seeds: [0]
   epochs: 1
   baseline_tuning:

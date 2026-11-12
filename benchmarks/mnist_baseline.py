@@ -826,10 +826,15 @@ def get_or_train_baseline(
     """
     target_path = Path(cfg["reports_dir"]) / f"backbone_seed{seed}.pt"
     load_path = target_path
-    if not load_path.exists() and cfg.get("reports_dir") == "reports/mnist_kcenter":
-        fallback = Path("reports/mnist_prototype_retrieval") / f"backbone_seed{seed}.pt"
-        if fallback.exists():
-            load_path = fallback
+    if not load_path.exists() and cfg.get("memory_method", "kmeans") != "kmeans":
+        candidates = [
+            Path(cfg["reports_dir"]).parent / "mnist_prototype_retrieval" / f"backbone_seed{seed}.pt",
+            Path("reports/mnist_prototype_retrieval") / f"backbone_seed{seed}.pt",
+        ]
+        for cand in candidates:
+            if cand.exists():
+                load_path = cand
+                break
     fingerprint = checkpoint_fingerprint(cfg, seed, splits.train_images.shape[0])
     net = build_baseline_net(seed)
 
@@ -855,14 +860,14 @@ def get_or_train_baseline(
         seed=seed,
         device=device,
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
             "state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
             "fingerprint": fingerprint,
             "train_time_s": train_time_s,
         },
-        path,
+        target_path,
     )
     return net.eval(), train_time_s, False
 
@@ -955,10 +960,15 @@ def tune_baseline(
     sets = cfg["beta_selection_sets"]
     target_path = Path(cfg["reports_dir"]) / "baseline_tuning.json"
     load_path = target_path
-    if not load_path.exists() and cfg.get("reports_dir") == "reports/mnist_kcenter":
-        fallback = Path("reports/mnist_prototype_retrieval") / "baseline_tuning.json"
-        if fallback.exists():
-            load_path = fallback
+    if not load_path.exists() and cfg.get("memory_method", "kmeans") != "kmeans":
+        candidates = [
+            Path(cfg["reports_dir"]).parent / "mnist_prototype_retrieval" / "baseline_tuning.json",
+            Path("reports/mnist_prototype_retrieval") / "baseline_tuning.json",
+        ]
+        for cand in candidates:
+            if cand.exists():
+                load_path = cand
+                break
     first = make_splits(data, seed=tuning["seeds"][0], val_size=cfg["val_size"],
                         train_subset=cfg["train_subset"])
     fingerprint = _tuning_fingerprint(cfg, first.train_images.shape[0])

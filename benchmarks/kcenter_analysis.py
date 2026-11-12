@@ -37,11 +37,25 @@ from benchmarks.mnist_prototype_retrieval import (
 )
 
 
-def extract_beta_star(val: Any) -> float:
-    """Extract scalar beta* value whether stored as float/int or per-placement dict."""
+def extract_beta_star(val: Any, default: float = 10.0) -> float:
+    """Extract scalar beta* value whether stored as float/int, per-placement dict, or empty dict."""
+    if val is None:
+        return default
+    if isinstance(val, (int, float)):
+        return float(val)
     if isinstance(val, dict):
-        return float(val.get("embedding", next(iter(val.values()))))
-    return float(val)
+        if not val:
+            return default
+        if "embedding" in val and val["embedding"] is not None:
+            return float(val["embedding"])
+        for v in val.values():
+            if v is not None:
+                return float(v)
+        return default
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
 
 
 # ---------------------------------------------------------------------------
@@ -511,11 +525,46 @@ def run_full_analysis(
 
     cfg_km = res_km["config"]
     cfg_kc = res_kc["config"]
-    if cfg_km["seeds"] != cfg_kc["seeds"]:
-        raise ValueError(f"Mismatched seeds: {cfg_km['seeds']} vs {cfg_kc['seeds']}")
-    for grid_key in ("gaussian_sigmas", "salt_pepper_probs", "occlusion_sizes"):
-        if cfg_km.get(grid_key) != cfg_kc.get(grid_key):
-            raise ValueError(f"Mismatched grid for {grid_key}: {cfg_km.get(grid_key)} vs {cfg_kc.get(grid_key)}")
+
+    # Priority 1.5 & Priority 2.1-2.4: Validate all relevant experimental configurations
+    if cfg_km.get("seeds") != cfg_kc.get("seeds"):
+        raise ValueError(f"Mismatched seeds: {cfg_km.get('seeds')} vs {cfg_kc.get('seeds')}")
+
+    required_matching_keys = (
+        "beta_values",
+        "num_updates_values",
+        "beta_selection_sets",
+        "prototypes_per_class",
+        "center_prototypes",
+        "eval_batch_size",
+        "noisy_sigma",
+        "placements",
+        "val_size",
+        "train_subset",
+        "test_subset",
+        "gaussian_sigmas",
+        "salt_pepper_probs",
+        "occlusion_sizes",
+    )
+    for key in required_matching_keys:
+        if cfg_km.get(key) != cfg_kc.get(key):
+            raise ValueError(f"Mismatched configuration for {key!r}: {cfg_km.get(key)!r} vs {cfg_kc.get(key)!r}")
+
+    seeds = cfg_km["seeds"]
+    n_seeds = len(seeds)
+
+    # Priority 2.5: Result array lengths, condition matching, and seed ordering
+    for exp_key in ("E1", "E3a", "E3b", "E3c", "E2", "E4", "E5"):
+        pts_km = res_km.get("results", {}).get(exp_key, [])
+        pts_kc = res_kc.get("results", {}).get(exp_key, [])
+        if len(pts_km) != len(pts_kc):
+            raise ValueError(f"Mismatched condition count for {exp_key}: {len(pts_km)} (KM) vs {len(pts_kc)} (KC)")
+        for idx, (p_km, p_kc) in enumerate(zip(pts_km, pts_kc)):
+            if p_km.get("value") != p_kc.get("value"):
+                raise ValueError(f"Mismatched condition value at {exp_key}[{idx}]: {p_km.get('value')} vs {p_kc.get('value')}")
+            for model_key in ("baseline", "hopfield"):
+                if len(p_km.get(model_key, [])) != n_seeds or len(p_kc.get(model_key, [])) != n_seeds:
+                    raise ValueError(f"Incomplete seed records in {exp_key}[{idx}][{model_key}]")
 
     # Fairness check: CNN baseline evaluations must match across runs
     base_km_e1 = [pt["head_acc"] for pt in res_km["results"]["E1"][0]["baseline"]]
@@ -526,9 +575,6 @@ def run_full_analysis(
                 f"Fairness violation: seed {cfg_km['seeds'][s_idx]} baseline head_acc mismatch "
                 f"({b1:.4f} vs {b2:.4f}). Runs must share the same frozen backbone weights."
             )
-
-    seeds = cfg_km["seeds"]
-    n_seeds = len(seeds)
 
     # Clean Accuracies (E1)
     clean_base = [pt["head_acc"] for pt in res_km["results"]["E1"][0]["baseline"]]
@@ -542,6 +588,13 @@ def run_full_analysis(
     def compute_seed_aucs(res: dict[str, Any], exp_key: str, model: str) -> list[float]:
         pts = res["results"][exp_key]
         levels = [p["value"] for p in pts]
+        expected_grid_map = {
+            "E3a": cfg_km["gaussian_sigmas"],
+            "E3b": cfg_km["salt_pepper_probs"],
+            "E3c": cfg_km["occlusion_sizes"],
+        }
+        if exp_key in expected_grid_map and levels != expected_grid_map[exp_key]:
+            raise ValueError(f"Levels in {exp_key} {levels} do not match expected config grid {expected_grid_map[exp_key]}")
         aucs = []
         for s in range(n_seeds):
             accs = [p[model][s]["head_acc"] for p in pts]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import itertools
 import math
+from pathlib import Path
 import pytest
 import torch
 
@@ -246,6 +247,8 @@ def test_config_memory_method_and_yaml_equality() -> None:
     y1.get("quick", {}).pop("reports_dir", None)
     y2.get("quick", {}).pop("reports_dir", None)
     y2.pop("memory_method", None)
+    y2.pop("backbone_dir", None)
+    y2.get("quick", {}).pop("backbone_dir", None)
     assert y1 == y2
 
 
@@ -290,3 +293,87 @@ def test_pairwise_distances_and_margin() -> None:
     labels = torch.tensor([0, 0, 1, 1])
     margin = inter_class_margin(mem, labels)
     assert math.isclose(margin, 9.5, rel_tol=1e-5)
+
+
+def test_extract_beta_star_all_structures() -> None:
+    # Proves that extract_beta_star handles floats, ints, dicts, empty dicts, None, and strings.
+    from benchmarks.kcenter_analysis import extract_beta_star
+    assert extract_beta_star(50.0) == 50.0
+    assert extract_beta_star(10) == 10.0
+    assert extract_beta_star("25.5") == 25.5
+    assert extract_beta_star({"embedding": 50.0}) == 50.0
+    assert extract_beta_star({"pixel": 5.0, "embedding": 20.0}) == 20.0
+    assert extract_beta_star({"custom": 15.0}) == 15.0
+    assert extract_beta_star({}) == 10.0
+    assert extract_beta_star({}, default=42.0) == 42.0
+    assert extract_beta_star(None) == 10.0
+    assert extract_beta_star("invalid", default=7.0) == 7.0
+
+
+def test_run_full_analysis_rejects_mismatched_configs(tmp_path: Path) -> None:
+    # Proves that run_full_analysis rejects runs with mismatched seeds or grids before pairing.
+    import json
+    from benchmarks.kcenter_analysis import run_full_analysis
+
+    dir_km = tmp_path / "km"
+    dir_kc = tmp_path / "kc"
+    dir_km.mkdir()
+    dir_kc.mkdir()
+
+    base_res = {
+        "config": {
+            "seeds": [0, 1],
+            "gaussian_sigmas": [0.0, 0.5],
+            "salt_pepper_probs": [0.0, 0.2],
+            "occlusion_sizes": [0, 7],
+            "beta_values": [1.0, 10.0],
+            "num_updates_values": [1],
+            "beta_selection_sets": [["clean", 0]],
+            "prototypes_per_class": 8,
+            "center_prototypes": True,
+            "eval_batch_size": 1000,
+            "noisy_sigma": 0.5,
+            "placements": ["embedding"],
+            "val_size": 100,
+            "train_subset": 200,
+            "test_subset": 100,
+        },
+        "results": {
+            "E1": [{"value": "clean", "baseline": [{"head_acc": 0.95}, {"head_acc": 0.96}], "hopfield": [{"head_acc": 0.94, "proto_acc": 0.94}, {"head_acc": 0.95, "proto_acc": 0.95}]}],
+            "E3a": [{"value": 0.0, "baseline": [{"head_acc": 0.95}, {"head_acc": 0.96}], "hopfield": [{"head_acc": 0.94}, {"head_acc": 0.95}]}],
+            "E3b": [{"value": 0.0, "baseline": [{"head_acc": 0.95}, {"head_acc": 0.96}], "hopfield": [{"head_acc": 0.94}, {"head_acc": 0.95}]}],
+            "E3c": [{"value": 0, "baseline": [{"head_acc": 0.95}, {"head_acc": 0.96}], "hopfield": [{"head_acc": 0.94}, {"head_acc": 0.95}]}],
+            "E2": [{"value": 1.0, "baseline": [{"head_acc": 0.95}, {"head_acc": 0.96}], "hopfield": [{"head_acc": 0.94}, {"head_acc": 0.95}]}],
+            "E4": [{"value": 1, "baseline": [{"head_acc": 0.95}, {"head_acc": 0.96}], "hopfield": [{"head_acc": 0.94}, {"head_acc": 0.95}]}],
+            "E5": [{"value": 1.0, "baseline": [{"head_acc": 0.95}, {"head_acc": 0.96}], "hopfield": [{"head_acc": 0.94}, {"head_acc": 0.95}]}],
+        },
+        "beta_star": 10.0,
+        "cost": {"e8": {}},
+    }
+
+    # Write valid KM
+    (dir_km / "results.json").write_text(json.dumps(base_res), encoding="utf-8")
+
+    # Mismatched seeds in KC
+    mismatched_seeds = json.loads(json.dumps(base_res))
+    mismatched_seeds["config"]["seeds"] = [0, 2]
+    (dir_kc / "results.json").write_text(json.dumps(mismatched_seeds), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Mismatched seeds"):
+        run_full_analysis(str(dir_km), str(dir_kc), output_dir=str(tmp_path / "out"))
+
+    # Mismatched grids in KC
+    mismatched_grid = json.loads(json.dumps(base_res))
+    mismatched_grid["config"]["gaussian_sigmas"] = [0.0, 0.8]
+    (dir_kc / "results.json").write_text(json.dumps(mismatched_grid), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Mismatched configuration for 'gaussian_sigmas'"):
+        run_full_analysis(str(dir_km), str(dir_kc), output_dir=str(tmp_path / "out"))
+
+    # Baseline mismatch in E1
+    mismatched_baseline = json.loads(json.dumps(base_res))
+    mismatched_baseline["results"]["E1"][0]["baseline"][0]["head_acc"] = 0.50
+    (dir_kc / "results.json").write_text(json.dumps(mismatched_baseline), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Fairness violation"):
+        run_full_analysis(str(dir_km), str(dir_kc), output_dir=str(tmp_path / "out"))

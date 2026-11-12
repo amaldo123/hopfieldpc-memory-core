@@ -2,6 +2,7 @@
 seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]   # >= 6 seeds enables the across-seed Wilcoxon test
 data_dir: "data"
 reports_dir: "reports/mnist_kcenter"
+backbone_dir: "reports/mnist_prototype_retrieval"
 device: "auto"            # auto | cpu | cuda
 
 # Training protocol (baseline only; the Hopfield variant reuses the frozen weights).
@@ -59,6 +60,7 @@ cost:
 # --quick overrides (cost merges per key).
 quick:
   reports_dir: "reports/mnist_kcenter_quick"   # never overwrite full checkpoints
+  backbone_dir: "reports/mnist_prototype_retrieval_quick"
   seeds: [0]
   epochs: 1
   baseline_tuning:

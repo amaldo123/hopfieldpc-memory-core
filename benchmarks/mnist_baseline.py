@@ -69,6 +69,7 @@ CONFIG_KEYS = (
     "seeds",
     "data_dir",
     "reports_dir",
+    "backbone_dir",
     "device",
     "val_size",
     "train_subset",
@@ -315,6 +316,11 @@ def validate_mnist_config(config: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"{key} must be a non-empty string, got {value!r}.")
 
+    backbone_dir = config.get("backbone_dir", None)
+    if backbone_dir is not None:
+        if not isinstance(backbone_dir, str) or not backbone_dir.strip():
+            raise ValueError(f"backbone_dir must be a non-empty string or null, got {backbone_dir!r}.")
+
     device = config.get("device", "auto")
     if device not in DEVICES:
         raise ValueError(f"device must be one of {DEVICES}, got {device!r}.")
@@ -366,6 +372,7 @@ def validate_mnist_config(config: dict[str, Any]) -> dict[str, Any]:
         "seeds": seeds,
         "data_dir": config.get("data_dir", "data"),
         "reports_dir": config.get("reports_dir", DEFAULT_REPORTS_DIR),
+        "backbone_dir": backbone_dir,
         "device": device,
         "val_size": _require_int("val_size", config.get("val_size", 5000), minimum=10),
         "train_subset": subsets["train_subset"],
@@ -825,16 +832,9 @@ def get_or_train_baseline(
     eval mode and is never optimized again ("frozen").
     """
     target_path = Path(cfg["reports_dir"]) / f"backbone_seed{seed}.pt"
-    load_path = target_path
-    if not load_path.exists() and cfg.get("memory_method", "kmeans") != "kmeans":
-        candidates = [
-            Path(cfg["reports_dir"]).parent / "mnist_prototype_retrieval" / f"backbone_seed{seed}.pt",
-            Path("reports/mnist_prototype_retrieval") / f"backbone_seed{seed}.pt",
-        ]
-        for cand in candidates:
-            if cand.exists():
-                load_path = cand
-                break
+    backbone_dir = cfg.get("backbone_dir")
+    load_path = Path(backbone_dir) / f"backbone_seed{seed}.pt" if backbone_dir else target_path
+
     fingerprint = checkpoint_fingerprint(cfg, seed, splits.train_images.shape[0])
     net = build_baseline_net(seed)
 
@@ -843,7 +843,7 @@ def get_or_train_baseline(
         if payload.get("fingerprint") == fingerprint:
             net.load_state_dict(payload["state_dict"])
             print(f"  seed {seed}: loaded cached backbone {load_path}")
-            if load_path != target_path:
+            if load_path.resolve() != target_path.resolve():
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 torch.save(payload, target_path)
             return net.to(device).eval(), float(payload["train_time_s"]), True
@@ -959,16 +959,8 @@ def tune_baseline(
         return None
     sets = cfg["beta_selection_sets"]
     target_path = Path(cfg["reports_dir"]) / "baseline_tuning.json"
-    load_path = target_path
-    if not load_path.exists() and cfg.get("memory_method", "kmeans") != "kmeans":
-        candidates = [
-            Path(cfg["reports_dir"]).parent / "mnist_prototype_retrieval" / "baseline_tuning.json",
-            Path("reports/mnist_prototype_retrieval") / "baseline_tuning.json",
-        ]
-        for cand in candidates:
-            if cand.exists():
-                load_path = cand
-                break
+    backbone_dir = cfg.get("backbone_dir")
+    load_path = Path(backbone_dir) / "baseline_tuning.json" if backbone_dir else target_path
     first = make_splits(data, seed=tuning["seeds"][0], val_size=cfg["val_size"],
                         train_subset=cfg["train_subset"])
     fingerprint = _tuning_fingerprint(cfg, first.train_images.shape[0])
@@ -980,7 +972,7 @@ def tune_baseline(
         if cached.get("fingerprint") == json.loads(json.dumps(fingerprint)):
             print(f"Baseline tuning: loaded cached result {load_path}")
             result = cached
-            if load_path != target_path:
+            if load_path.resolve() != target_path.resolve():
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(target_path, "w", encoding="utf-8") as f:
                     json.dump(result, f, indent=2)

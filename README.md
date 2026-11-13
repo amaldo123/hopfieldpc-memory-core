@@ -169,7 +169,7 @@ python -m benchmarks.mnist_prototype_retrieval --config configs/mnist_kcenter.ya
 python -m benchmarks.kcenter_analysis
 ```
 
-Finding (10 seeds): K-Center reduces covering radius (-8.3%) and constructs memory ~8x faster, but significantly degrades clean accuracy (-1.13 pp, Wilcoxon p=0.0020) and noise robustness because farthest-point traversal captures ambiguous tail outliers (49.1% training misclassifications) that leak 39.05% of softmax attention to wrong classes.
+Finding (10 seeds): K-Center constructs memory ~8x faster, but degrades clean accuracy (-0.74 pp vs K-means, 0.9829 vs 0.9903; -2.19 pp at matched beta=100, 0.9684 vs 0.9903, Wilcoxon p=0.0020) and noise robustness (losing 1.4 to 2.7 pp of AUC across Gaussian, salt-and-pepper, and occlusion noise) because farthest-point traversal captures ambiguous tail outliers (49.1% training misclassifications) that leak ~19.5% of softmax attention to wrong classes on clean data (true-class proto weight 0.805 vs 0.990 for K-means).
 
 ## Next Planned Tasks
 

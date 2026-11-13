@@ -37,25 +37,28 @@ from benchmarks.mnist_prototype_retrieval import (
 )
 
 
-def extract_beta_star(val: Any, default: float = 10.0) -> float:
-    """Extract scalar beta* value whether stored as float/int, per-placement dict, or empty dict."""
+def extract_beta_star(val: Any) -> float:
+    """Extract scalar beta* value from float/int, numeric string, or per-placement dict.
+
+    Raises ValueError if val is missing (None), empty, or cannot be parsed.
+    """
     if val is None:
-        return default
+        raise ValueError("beta_star value is missing (None)")
     if isinstance(val, (int, float)):
         return float(val)
     if isinstance(val, dict):
         if not val:
-            return default
+            raise ValueError("beta_star dictionary is empty")
         if "embedding" in val and val["embedding"] is not None:
             return float(val["embedding"])
         for v in val.values():
             if v is not None:
                 return float(v)
-        return default
+        raise ValueError("beta_star dictionary contains no non-null values")
     try:
         return float(val)
-    except (TypeError, ValueError):
-        return default
+    except (TypeError, ValueError) as err:
+        raise ValueError(f"Cannot extract beta* from {val!r}") from err
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +396,7 @@ def generate_figures(
     ax1.hist(z_kc, bins=15, alpha=0.6, color="#cf222e", label=f"K-Center (Mean: {np.mean(z_kc):.2f})", edgecolor="black")
     ax1.hist(z_rand, bins=15, alpha=0.4, color="#8250df", label=f"Random-8 (Mean: {np.mean(z_rand):.2f})", edgecolor="black")
     ax1.set_title("Outlier Distance from Class Mean", fontsize=10, fontweight="bold")
-    ax1.set_xlabel("Std Deviations from Class Mean")
+    ax1.set_xlabel("Standardized Distance from Class Mean")
     ax1.set_ylabel("Count")
     ax1.legend(frameon=True)
     ax1.grid(True, linestyle="--", alpha=0.4)
@@ -559,11 +562,11 @@ def run_full_analysis(
         pts_kc = res_kc.get("results", {}).get(exp_key, [])
         if len(pts_km) != len(pts_kc):
             raise ValueError(f"Mismatched condition count for {exp_key}: {len(pts_km)} (KM) vs {len(pts_kc)} (KC)")
-        for idx, (p_km, p_kc) in enumerate(zip(pts_km, pts_kc)):
-            if p_km.get("value") != p_kc.get("value"):
-                raise ValueError(f"Mismatched condition value at {exp_key}[{idx}]: {p_km.get('value')} vs {p_kc.get('value')}")
+        for idx, (pt_km, pt_kc) in enumerate(zip(pts_km, pts_kc)):
+            if pt_km.get("value") != pt_kc.get("value"):
+                raise ValueError(f"Mismatched condition value at {exp_key}[{idx}]: {pt_km.get('value')} vs {pt_kc.get('value')}")
             for model_key in ("baseline", "hopfield"):
-                if len(p_km.get(model_key, [])) != n_seeds or len(p_kc.get(model_key, [])) != n_seeds:
+                if len(pt_km.get(model_key, [])) != n_seeds or len(pt_kc.get(model_key, [])) != n_seeds:
                     raise ValueError(f"Incomplete seed records in {exp_key}[{idx}][{model_key}]")
 
     # Fairness check: CNN baseline evaluations must match across runs
@@ -718,6 +721,17 @@ def run_full_analysis(
     sample_mem_kc: torch.Tensor | None = None
     sample_mem_rnd: torch.Tensor | None = None
 
+    tune_path = p_km / "baseline_tuning.json"
+    if tune_path.exists():
+        try:
+            with open(tune_path, encoding="utf-8") as f:
+                tuning_res = json.load(f)
+            if "best" in tuning_res:
+                cfg_km.update(tuning_res["best"])
+                cfg_kc.update(tuning_res["best"])
+        except Exception:
+            pass
+
     print("Computing memory geometry and outlier diagnostics across seeds...")
     for s in seeds:
         run = prepare_baseline_run(cfg_km, data, s, device)
@@ -815,16 +829,19 @@ def run_full_analysis(
     outlier_summary = {
         "kmeans": {
             "misclassified_mean": float(np.mean([o["misclassified"] for o in outlier_km_list])),
+            "misclassified_rate": float(np.mean([o["misclassified_rate"] for o in outlier_km_list])),
             "mean_z_score": float(np.mean([o["mean_z_score"] for o in outlier_km_list])),
             "z_scores": outlier_km_list[0]["z_scores"],
         },
         "kcenter": {
             "misclassified_mean": float(np.mean([o["misclassified"] for o in outlier_kc_list])),
+            "misclassified_rate": float(np.mean([o["misclassified_rate"] for o in outlier_kc_list])),
             "mean_z_score": float(np.mean([o["mean_z_score"] for o in outlier_kc_list])),
             "z_scores": outlier_kc_list[0]["z_scores"],
         },
         "random": {
             "misclassified_mean": float(np.mean([o["misclassified"] for o in outlier_rnd_list])),
+            "misclassified_rate": float(np.mean([o["misclassified_rate"] for o in outlier_rnd_list])),
             "mean_z_score": float(np.mean([o["mean_z_score"] for o in outlier_rnd_list])),
             "z_scores": outlier_rnd_list[0]["z_scores"],
         },

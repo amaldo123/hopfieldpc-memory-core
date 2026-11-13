@@ -296,7 +296,7 @@ def test_pairwise_distances_and_margin() -> None:
 
 
 def test_extract_beta_star_all_structures() -> None:
-    # Proves that extract_beta_star handles floats, ints, dicts, empty dicts, None, and strings.
+    # Proves that extract_beta_star handles floats, ints, dicts, and raises ValueError for missing/empty/invalid values.
     from benchmarks.kcenter_analysis import extract_beta_star
     assert extract_beta_star(50.0) == 50.0
     assert extract_beta_star(10) == 10.0
@@ -304,10 +304,15 @@ def test_extract_beta_star_all_structures() -> None:
     assert extract_beta_star({"embedding": 50.0}) == 50.0
     assert extract_beta_star({"pixel": 5.0, "embedding": 20.0}) == 20.0
     assert extract_beta_star({"custom": 15.0}) == 15.0
-    assert extract_beta_star({}) == 10.0
-    assert extract_beta_star({}, default=42.0) == 42.0
-    assert extract_beta_star(None) == 10.0
-    assert extract_beta_star("invalid", default=7.0) == 7.0
+
+    with pytest.raises(ValueError, match="missing"):
+        extract_beta_star(None)
+    with pytest.raises(ValueError, match="empty"):
+        extract_beta_star({})
+    with pytest.raises(ValueError, match="no non-null values"):
+        extract_beta_star({"embedding": None})
+    with pytest.raises(ValueError, match="Cannot extract beta"):
+        extract_beta_star("invalid")
 
 
 def test_run_full_analysis_rejects_mismatched_configs(tmp_path: Path) -> None:
